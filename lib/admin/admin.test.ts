@@ -112,7 +112,12 @@ describe("members", () => {
     let [after] = await db.select().from(members).where(eq(members.id, m.id));
     expect(after.state).toBe("suspended");
     expect(after.suspendedUntil).not.toBeNull();
-    await reinstateMember(db, { adminId: admin, memberId: m.id, reason: "Appeal accepted" });
+    await reinstateMember(db, {
+      adminId: admin,
+      memberId: m.id,
+      reason: "Appeal accepted",
+      config: CONFIG_DEFAULTS,
+    });
     [after] = await db.select().from(members).where(eq(members.id, m.id));
     expect(after.state).toBe("active");
     const log = await db.select().from(adminActions).where(eq(adminActions.targetId, m.id));

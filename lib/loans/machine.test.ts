@@ -32,6 +32,9 @@ const CODE = "ABC234";
 
 const config: MachineConfig = {
   request_timeout_hours: 48,
+  payment_window_hours: 24,
+  platform_fee_pct: 15,
+  max_open_loans: 2,
   handoff_timeout_days: 5,
   handoff_auto_confirm_hours: 72,
   extension_days: 7,
@@ -53,7 +56,11 @@ const copy: CopySnapshot = {
   declineCount: 0,
   verificationStatus: "unverified",
   replacementValuePaise: 49900,
+  rentalPricePaise: 0,
+  loanPeriodDays: 21,
 };
+/** A priced copy: ₹50 rental, 15% fee → ₹7.50 fee, ₹42.50 to the lender. */
+const pricedCopy: CopySnapshot = { ...copy, rentalPricePaise: 5000 };
 
 const borrower: BorrowerSnapshot = {
   id: BORROWER,
@@ -62,7 +69,6 @@ const borrower: BorrowerSnapshot = {
   trustScore: 60,
   suspendedUntil: null,
   needsTopup: false,
-  plan: { concurrentLimit: 2, loanPeriodDays: 21 },
   openLoanCount: 0,
   pendingLoanCount: 0,
   hasCompletedBorrow: true,
@@ -117,7 +123,10 @@ function loanIn(state: LoanState, over: Partial<Loan> = {}): Loan {
     returnCondition: null,
     autoConfirmedSide: null,
     declineReason: null,
-    poolMonth: null,
+    rentalPaise: 0,
+    platformFeePaise: 0,
+    paymentDueAt: null,
+    paidAt: null,
   };
   const at = (s: LoanState): Partial<Loan> => {
     switch (s) {
@@ -128,10 +137,11 @@ function loanIn(state: LoanState, over: Partial<Loan> = {}): Loan {
       case "expired":
         return { respondedAt: ago(1 * D) };
       case "accepted":
-        return { respondedAt: ago(1 * D) };
+        return { respondedAt: ago(1 * D), paidAt: ago(1 * D) };
       case "on_loan":
         return {
           respondedAt: ago(10 * D),
+          paidAt: ago(10 * D),
           outLenderConfirmedAt: ago(9 * D),
           outBorrowerConfirmedAt: ago(9 * D),
           handedOffAt: ago(9 * D),
@@ -140,6 +150,7 @@ function loanIn(state: LoanState, over: Partial<Loan> = {}): Loan {
       case "overdue":
         return {
           respondedAt: ago(30 * D),
+          paidAt: ago(30 * D),
           outLenderConfirmedAt: ago(29 * D),
           outBorrowerConfirmedAt: ago(29 * D),
           handedOffAt: ago(29 * D),
@@ -150,6 +161,7 @@ function loanIn(state: LoanState, over: Partial<Loan> = {}): Loan {
       case "resolved":
         return {
           respondedAt: ago(20 * D),
+          paidAt: ago(20 * D),
           outLenderConfirmedAt: ago(19 * D),
           outBorrowerConfirmedAt: ago(19 * D),
           handedOffAt: ago(19 * D),
@@ -158,10 +170,14 @@ function loanIn(state: LoanState, over: Partial<Loan> = {}): Loan {
           returnLenderConfirmedAt: ago(1 * H),
           returnedAt: ago(1 * H),
           returnCondition: "good",
-          poolMonth: new Date("2026-09-01"),
         };
       case "lost":
-        return { respondedAt: ago(40 * D), handedOffAt: ago(39 * D), dueAt: ago(18 * D) };
+        return {
+          respondedAt: ago(40 * D),
+          paidAt: ago(40 * D),
+          handedOffAt: ago(39 * D),
+          dueAt: ago(18 * D),
+        };
     }
   };
   return { ...base, ...at(state), ...over };
@@ -180,6 +196,11 @@ function eventFor(type: LoanEventType): { event: LoanEvent; ctx: Ctx } {
       return { event: { type, photoPath: "loans/x/out.jpg" }, ctx: asLender() };
     case "auto_confirm_out":
       return { event: { type }, ctx: asSystem({ now: ahead(10 * D) }) };
+    case "pay":
+      return {
+        event: { type, razorpayPaymentId: "pay_x", amountPaise: 5000 },
+        ctx: asSystem({ copy: pricedCopy }),
+      };
     case "extend":
       return { event: { type }, ctx: asBorrower() };
     case "overdue_tick":
@@ -203,7 +224,7 @@ function eventFor(type: LoanEventType): { event: LoanEvent; ctx: Ctx } {
 /** The design.md transition table: which (state, event) pairs are legal at all. */
 const LEGAL: Record<LoanState, LoanEventType[]> = {
   requested: ["accept", "decline", "timeout"],
-  accepted: ["confirm_out", "auto_confirm_out", "timeout"],
+  accepted: ["confirm_out", "auto_confirm_out", "pay", "timeout"],
   on_loan: ["extend", "overdue_tick", "confirm_return", "auto_confirm_return"],
   overdue: ["confirm_return", "auto_confirm_return", "lost_tick"],
   returned: ["dispute"],
@@ -218,6 +239,8 @@ const LEGAL: Record<LoanState, LoanEventType[]> = {
 function shapeFor(state: LoanState, type: LoanEventType): Partial<Loan> {
   if (state === "accepted" && type === "auto_confirm_out")
     return { outLenderConfirmedAt: ago(4 * D) };
+  if (state === "accepted" && type === "pay")
+    return { rentalPaise: 5000, platformFeePaise: 750, paidAt: null, paymentDueAt: ahead(1 * H) };
   if ((state === "on_loan" || state === "overdue") && type === "auto_confirm_return")
     return { returnBorrowerConfirmedAt: ago(4 * D) };
   if (state === "on_loan" && type === "confirm_return") return {};
@@ -284,11 +307,8 @@ describe("requestLoan guards", () => {
     ["handoff_not_allowed", { copy: { ...copy, allowedHandoffs: ["drop_point" as const] } }],
     ["borrower_suspended", { borrower: { ...borrower, state: "suspended" as const } }],
     ["borrower_suspended", { borrower: { ...borrower, suspendedUntil: ahead(1 * D) } }],
-    [
-      "borrower_not_active",
-      { borrower: { ...borrower, state: "registered" as const, plan: null } },
-    ],
-    ["borrower_not_active", { borrower: { ...borrower, state: "lapsed" as const } }],
+    ["borrower_not_active", { borrower: { ...borrower, state: "registered" as const } }],
+    ["borrower_not_active", { borrower: { ...borrower, state: "cancelled" as const } }],
     [
       "trust_below_copy_min",
       { borrower: { ...borrower, trustScore: 45 }, copy: { ...copy, minBorrowerTrust: 50 } },
@@ -502,12 +522,12 @@ describe("accepted (meet-up)", () => {
     ]);
   });
 
-  it("due date follows the borrower's plan period", () => {
+  it("due date follows the copy's loan period", () => {
     const a = loanIn("accepted", { outLenderConfirmedAt: ago(1 * H) });
     const res = transition(
       a,
       { type: "confirm_out", photoPath: "b.jpg" },
-      asBorrower({ borrower: { ...borrower, plan: { concurrentLimit: 3, loanPeriodDays: 28 } } }),
+      asBorrower({ copy: { ...copy, loanPeriodDays: 28 } }),
     );
     expect(res.ok && res.value.loan.dueAt).toEqual(ahead(28 * D));
   });
@@ -571,6 +591,158 @@ describe("accepted (meet-up)", () => {
     expect(
       lenderShowed.ok && find(lenderShowed.value.effects, "set_copy_availability")[0].availability,
     ).toBe("available");
+  });
+});
+
+describe("priced loans: request → accept → pay → handoff", () => {
+  const priced = { copy: pricedCopy };
+
+  it("snapshots the rental and fee at request time", () => {
+    const res = requestLoan(
+      { copyId: copy.id, borrowerId: BORROWER, handoffMethod: "meetup" },
+      asBorrower(priced),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.loan).toMatchObject({
+      rentalPaise: 5000,
+      platformFeePaise: 750,
+      paidAt: null,
+    });
+    expect(find(res.value.effects, "notify")[0].vars.amountPaise).toBe(5000);
+  });
+
+  it("accept opens a 24 h payment window and asks the borrower to pay", () => {
+    const r = loanIn("requested", { rentalPaise: 5000, platformFeePaise: 750 });
+    const acc = transition(r, { type: "accept", inHandConfirmed: true }, asLender(priced));
+    expect(acc.ok).toBe(true);
+    if (!acc.ok) return;
+    expect(acc.value.loan.paidAt).toBeNull();
+    expect(acc.value.loan.paymentDueAt).toEqual(ahead(24 * H));
+    expect(find(acc.value.effects, "notify")[0]).toMatchObject({
+      memberId: BORROWER,
+      template: "payment_due",
+      vars: { amountPaise: 5000 },
+    });
+  });
+
+  it("a free copy is paid at acceptance", () => {
+    const acc = transition(
+      loanIn("requested"),
+      { type: "accept", inHandConfirmed: true },
+      asLender(),
+    );
+    expect(acc.ok && acc.value.loan).toMatchObject({ paidAt: NOW, paymentDueAt: null });
+    expect(acc.ok && find(acc.value.effects, "notify")[0].template).toBe("request_accepted");
+  });
+
+  const unpaid = () =>
+    loanIn("accepted", {
+      rentalPaise: 5000,
+      platformFeePaise: 750,
+      paidAt: null,
+      paymentDueAt: ahead(23 * H),
+    });
+
+  it("blocks handoff confirmation until paid", () => {
+    expect(
+      transition(unpaid(), { type: "confirm_out", photoPath: "p.jpg" }, asLender(priced)),
+    ).toMatchObject({ ok: false, error: { code: "payment_required" } });
+  });
+
+  it("pay: system only, exact amount, once", () => {
+    const ev = { type: "pay" as const, razorpayPaymentId: "pay_1", amountPaise: 5000 };
+    expect(transition(unpaid(), ev, asBorrower(priced))).toMatchObject({
+      ok: false,
+      error: { code: "not_admin" },
+    });
+    expect(transition(unpaid(), { ...ev, amountPaise: 4000 }, asSystem(priced))).toMatchObject({
+      ok: false,
+      error: { code: "payment_amount_mismatch" },
+    });
+
+    const paid = transition(unpaid(), ev, asSystem(priced));
+    expect(paid.ok).toBe(true);
+    if (!paid.ok) return;
+    expect(paid.value.loan.paidAt).toEqual(NOW);
+    expect(paid.value.loan.state).toBe("accepted");
+    expect(kinds(paid.value.effects)).toEqual(["mark_payment_captured", "notify", "notify"]);
+    expect(find(paid.value.effects, "mark_payment_captured")[0]).toMatchObject({
+      razorpayPaymentId: "pay_1",
+      amountPaise: 5000,
+    });
+    expect(find(paid.value.effects, "notify").map((n) => [n.memberId, n.template])).toEqual([
+      [LENDER, "payment_received"],
+      [BORROWER, "request_accepted"],
+    ]);
+    expect(transition(paid.value.loan, ev, asSystem(priced))).toMatchObject({
+      ok: false,
+      error: { code: "already_paid" },
+    });
+  });
+
+  it("unpaid past the window expires quietly: copy freed, no trust hit, no refund", () => {
+    expect(transition(unpaid(), { type: "timeout" }, asSystem(priced))).toMatchObject({
+      ok: false,
+      error: { code: "too_early" },
+    });
+    const late = transition(
+      unpaid(),
+      { type: "timeout" },
+      asSystem({ ...priced, now: ahead(25 * H) }),
+    );
+    expect(late.ok).toBe(true);
+    if (!late.ok) return;
+    expect(late.value.loan.state).toBe("expired");
+    expect(kinds(late.value.effects)).toEqual(["set_copy_availability", "notify", "notify"]);
+    expect(find(late.value.effects, "notify").every((n) => n.template === "payment_expired")).toBe(
+      true,
+    );
+  });
+
+  it("handoff never happens after payment: refund the borrower in full", () => {
+    const paid = loanIn("accepted", {
+      rentalPaise: 5000,
+      platformFeePaise: 750,
+      respondedAt: ago(6 * D),
+      paidAt: ago(6 * D),
+    });
+    const res = transition(paid, { type: "timeout" }, asSystem(priced));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.loan.state).toBe("expired");
+    expect(find(res.value.effects, "refund_payment")[0]).toMatchObject({
+      loanId: "loan-1",
+      amountPaise: 5000,
+    });
+    expect(kinds(res.value.effects)).not.toContain("ledger");
+  });
+
+  it("credits the lender's payout balance with rental minus fee when the book goes out", () => {
+    const a = loanIn("accepted", {
+      rentalPaise: 5000,
+      platformFeePaise: 750,
+      outLenderConfirmedAt: ago(1 * H),
+    });
+    const res = transition(a, { type: "confirm_out", photoPath: "b.jpg" }, asBorrower(priced));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.loan.state).toBe("on_loan");
+    expect(find(res.value.effects, "ledger")).toEqual([
+      expect.objectContaining({
+        memberId: LENDER,
+        account: "payout",
+        ledgerKind: "rental_credit",
+        amountPaise: 4250,
+        loanId: "loan-1",
+      }),
+    ]);
+  });
+
+  it("a free loan posts no ledger entry on handoff", () => {
+    const a = loanIn("accepted", { outLenderConfirmedAt: ago(1 * H) });
+    const res = transition(a, { type: "confirm_out", photoPath: "b.jpg" }, asBorrower());
+    expect(res.ok && kinds(res.value.effects)).not.toContain("ledger");
   });
 });
 
@@ -739,7 +911,6 @@ describe("return", () => {
       state: "returned",
       returnedAt: NOW,
       returnCondition: "worn",
-      poolMonth: new Date("2026-09-01T00:00:00Z"),
     });
     expect(find(done.value.effects, "loan_photo")[0]).toMatchObject({
       phase: "return",

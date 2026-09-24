@@ -12,7 +12,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
-import { MIN_BORROWER_TRUST_OPTIONS, replacementBounds } from "@/lib/copies/rules";
+import {
+  DEFAULT_LOAN_PERIOD_DAYS,
+  DEFAULT_RENTAL_PRICE_PAISE,
+  LOAN_PERIOD_OPTIONS,
+  MIN_BORROWER_TRUST_OPTIONS,
+  replacementBounds,
+} from "@/lib/copies/rules";
 import { formatPaise } from "@/lib/money";
 import {
   createCopyAction,
@@ -41,14 +47,30 @@ type Step =
   | { kind: "details"; book: Book };
 
 /** Details survive "Add another" so bulk listing is quick (task 6.1). */
-type StickyDetails = { condition: string; allowedHandoffs: string[]; minBorrowerTrust: number };
+type StickyDetails = {
+  condition: string;
+  allowedHandoffs: string[];
+  minBorrowerTrust: number;
+  rentalPricePaise: number;
+  loanPeriodDays: number;
+};
 const DEFAULT_STICKY: StickyDetails = {
   condition: "good",
   allowedHandoffs: ["meetup", "courier"],
   minBorrowerTrust: 0,
+  rentalPricePaise: DEFAULT_RENTAL_PRICE_PAISE,
+  loanPeriodDays: DEFAULT_LOAN_PERIOD_DAYS,
 };
 
-export function AddCopyWizard({ remaining }: { remaining: number | null }) {
+export function AddCopyWizard({
+  remaining,
+  rentalBounds,
+  platformFeePct,
+}: {
+  remaining: number | null;
+  rentalBounds: { min: number; max: number };
+  platformFeePct: number;
+}) {
   const [step, setStep] = useState<Step>({ kind: "scan" });
   const [sticky, setSticky] = useState<StickyDetails>(DEFAULT_STICKY);
   const [added, setAdded] = useState(0);
@@ -214,12 +236,24 @@ function DetailsForm({
   const [condition, setCondition] = useState(sticky.condition);
   const [handoffs, setHandoffs] = useState<string[]>(sticky.allowedHandoffs);
   const [minTrust, setMinTrust] = useState(sticky.minBorrowerTrust);
+  const [rental, setRental] = useState(
+    Math.min(rentalBounds.max, Math.max(rentalBounds.min, sticky.rentalPricePaise)),
+  );
+  const [period, setPeriod] = useState(sticky.loanPeriodDays);
   const bounds = replacementBounds(book.listPricePaise);
   const [value, setValue] = useState(bounds.def);
+  const lenderKeeps = rental - Math.floor((rental * platformFeePct) / 100);
   const fields = state && !state.ok ? (state.fields ?? {}) : {};
 
   useEffect(() => {
-    if (state?.ok) onSaved({ condition, allowedHandoffs: handoffs, minBorrowerTrust: minTrust });
+    if (state?.ok)
+      onSaved({
+        condition,
+        allowedHandoffs: handoffs,
+        minBorrowerTrust: minTrust,
+        rentalPricePaise: rental,
+        loanPeriodDays: period,
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per successful save
   }, [state]);
 
@@ -235,6 +269,8 @@ function DetailsForm({
       ))}
       <input type="hidden" name="minBorrowerTrust" value={minTrust} />
       <input type="hidden" name="replacementValuePaise" value={value} />
+      <input type="hidden" name="rentalPricePaise" value={rental} />
+      <input type="hidden" name="loanPeriodDays" value={period} />
       {photoPath && <input type="hidden" name="photoPath" value={photoPath} />}
 
       <BookCard book={book} />
@@ -302,6 +338,52 @@ function DetailsForm({
           {book.listPricePaise ? `; the catalogue lists it at ${formatPaise(bounds.def)}.` : "."}
         </p>
       </section>
+
+      <section className="flex flex-col gap-2">
+        <div className="flex items-baseline justify-between">
+          <Label htmlFor="rental">Rental price per loan</Label>
+          <span className="text-sm font-medium">{rental === 0 ? "Free" : formatPaise(rental)}</span>
+        </div>
+        <input
+          id="rental"
+          type="range"
+          min={rentalBounds.min}
+          max={rentalBounds.max}
+          step={500}
+          value={rental}
+          onChange={(e) => setRental(Number(e.target.value))}
+          className="w-full"
+        />
+        <p className="text-muted-foreground text-xs">
+          {rental === 0
+            ? "You're lending this one for free."
+            : `The borrower pays ${formatPaise(rental)} when you accept; you receive ${formatPaise(lenderKeeps)} after the ${platformFeePct}% platform fee.`}
+        </p>
+        {fields.rentalPricePaise && (
+          <p role="alert" className="text-destructive text-sm">
+            {fields.rentalPricePaise}
+          </p>
+        )}
+      </section>
+
+      <fieldset className="flex flex-col gap-2">
+        <legend className="text-sm font-medium">Loan period</legend>
+        <RadioGroup
+          value={String(period)}
+          onValueChange={(v) => setPeriod(Number(v))}
+          className="grid grid-cols-3 gap-2"
+        >
+          {LOAN_PERIOD_OPTIONS.map((d) => (
+            <label
+              key={d}
+              className="has-[[data-checked]]:border-foreground flex items-center justify-center gap-2 rounded-lg border p-3 text-sm"
+            >
+              <RadioGroupItem value={String(d)} />
+              {d} days
+            </label>
+          ))}
+        </RadioGroup>
+      </fieldset>
 
       <fieldset className="flex flex-col gap-2">
         <legend className="text-sm font-medium">How you&apos;ll hand it over</legend>

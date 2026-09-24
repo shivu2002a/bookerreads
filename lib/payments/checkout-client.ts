@@ -1,14 +1,13 @@
 "use client";
 
 /**
- * Loads Razorpay Checkout on demand (only on the activation page) and opens it.
+ * Loads Razorpay Checkout on demand (activation and loan pages only) and opens it.
  * Resolves with the success payload or rejects on dismiss/failure.
  */
 
 export type CheckoutSuccess = {
   razorpay_payment_id: string;
-  razorpay_order_id?: string;
-  razorpay_subscription_id?: string;
+  razorpay_order_id: string;
   razorpay_signature: string;
 };
 
@@ -37,8 +36,7 @@ function loadScript(): Promise<RazorpayCtor> {
 
 export async function openCheckout(input: {
   keyId: string;
-  orderId?: string;
-  subscriptionId?: string;
+  orderId: string;
   amountPaise: number;
   description: string;
   themeColor?: string;
@@ -50,9 +48,9 @@ export async function openCheckout(input: {
       name: "BookerReads",
       description: input.description,
       currency: "INR",
-      ...(input.orderId ? { order_id: input.orderId, amount: input.amountPaise } : {}),
-      ...(input.subscriptionId ? { subscription_id: input.subscriptionId } : {}),
-      theme: { color: input.themeColor ?? "#0f172a" },
+      order_id: input.orderId,
+      amount: input.amountPaise,
+      theme: { color: input.themeColor ?? "#6f2b2b" },
       handler: (res: CheckoutSuccess) => resolve(res),
       modal: { ondismiss: () => reject(new Error("dismissed")) },
       // Phone is prefilled from Auth on the server side; nothing else is collected.

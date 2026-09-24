@@ -1,6 +1,6 @@
 # BookerReads
 
-Members-only, neighbourhood-scoped book lending network for Bangalore. 
+Members-only, neighbourhood-scoped book lending network for Bangalore.
 
 ## Stack
 

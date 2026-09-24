@@ -72,8 +72,13 @@ export default async function NewLoanPage({
             </Link>
             <TrustScore score={data.lender.trustScore} />
           </div>
+          <p className="text-sm font-medium">
+            {data.copy.rentalPricePaise === 0
+              ? "Free to borrow"
+              : `${formatPaise(data.copy.rentalPricePaise)} for ${data.copy.loanPeriodDays} days`}
+          </p>
           <p className="text-muted-foreground text-xs">
-            Replacement value {formatPaise(data.copy.replacementValuePaise)}
+            Replacement value {formatPaise(data.copy.replacementValuePaise)} if lost
           </p>
         </div>
       </div>

@@ -147,6 +147,13 @@ function CopyRow({
   return (
     <li className="flex flex-col gap-3 rounded-lg border p-3">
       <div className="flex flex-wrap items-center gap-1.5">
+        <span className="font-heading text-base font-semibold">
+          {copy.rentalPricePaise === 0 ? "Free" : formatPaise(copy.rentalPricePaise)}
+          <span className="text-muted-foreground text-xs font-normal">
+            {" "}
+            · {copy.loanPeriodDays} days
+          </span>
+        </span>
         <ConditionBadge condition={copy.condition} />
         <VerifiedBadge status={copy.verificationStatus} />
         {copy.availability === "on_loan" && (

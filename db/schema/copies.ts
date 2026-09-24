@@ -26,6 +26,10 @@ export const copies = pgTable(
     notes: text("notes"),
     allowedHandoffs: handoffMethod("allowed_handoffs").array().notNull(),
     minBorrowerTrust: smallint("min_borrower_trust").notNull().default(0),
+    /** What a borrower pays per loan, set by the lister (Requirement 2.4). 0 = lend for free. */
+    rentalPricePaise: integer("rental_price_paise").notNull().default(0),
+    /** 14, 21, or 28 days; drives due_at (Requirement 6.5). */
+    loanPeriodDays: smallint("loan_period_days").notNull().default(21),
     availability: copyAvailability("availability").notNull().default("available"),
     verificationStatus: verificationStatus("verification_status").notNull().default("unverified"),
     /** Declines and expiries since the last completed loan; 3 triggers auto-unlist (Requirement 5.8). */

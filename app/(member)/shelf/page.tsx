@@ -96,8 +96,11 @@ export default async function ShelfPage() {
                         )}
                       </div>
                       <p className="text-muted-foreground mt-1 text-xs">
-                        Replacement {formatPaise(c.replacementValuePaise)} · {c.requestCount}{" "}
-                        request{c.requestCount === 1 ? "" : "s"}
+                        {c.rentalPricePaise === 0
+                          ? "Free"
+                          : `${formatPaise(c.rentalPricePaise)} per loan`}{" "}
+                        · {c.loanPeriodDays} days · {c.requestCount} request
+                        {c.requestCount === 1 ? "" : "s"}
                       </p>
                     </div>
                     <ShelfCopyActions copyId={c.id} availability={c.availability} />

@@ -133,7 +133,12 @@ export async function memberAction(formData: FormData): Promise<ActionResult> {
         break;
       }
       case "reinstate":
-        await reinstateMember(db, { adminId: admin.id, memberId: memberId.data, reason: r.data });
+        await reinstateMember(db, {
+          adminId: admin.id,
+          memberId: memberId.data,
+          reason: r.data,
+          config: await loadConfig(db),
+        });
         break;
       case "adjust_deposit": {
         const amount = z.coerce

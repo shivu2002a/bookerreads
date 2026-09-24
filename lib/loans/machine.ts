@@ -41,19 +41,22 @@ const MESSAGES: Record<LoanErrorCode, string> = {
   too_early: "Not yet.",
   already_confirmed_by_both: "Both sides have already confirmed.",
   invalid_charge: "Charge must be between 0 and the replacement value.",
+  payment_required: "The borrower hasn't paid for this loan yet.",
+  already_paid: "This loan has already been paid.",
+  payment_amount_mismatch: "The payment amount doesn't match the rental price.",
   own_copy: "You can't borrow your own book.",
   copy_unavailable: "This copy isn't available right now.",
   cluster_mismatch: "Only members of this area can borrow this copy.",
   handoff_not_allowed: "The lender doesn't offer that handoff method for this copy.",
   drop_point_required: "Choose a drop point.",
   drop_point_unavailable: "That drop point is full or closed. Choose another.",
-  borrower_not_active: "Pick a plan and pay the deposit to start borrowing.",
+  borrower_not_active: "Pay the deposit and list a book to start borrowing.",
   borrower_suspended: "Your account is suspended from borrowing for now.",
   trust_below_copy_min: "The lender has set a higher trust threshold for this copy.",
   trust_below_floor: "Your trust score is too low to borrow. Lend a few books to recover it.",
   deposit_topup_required: "Top up your deposit before requesting another book.",
   activation_required: "Finish activating your membership to borrow.",
-  at_concurrent_limit: "You've reached your plan's limit for books at once.",
+  at_concurrent_limit: "You've reached the limit for books out at once.",
   new_borrower_one_at_a_time: "Until your first return, you can have one request open at a time.",
 };
 
@@ -79,8 +82,6 @@ export function partyOf(loan: Loan, memberId: string): Party | null {
 function actorParty(loan: Loan, ctx: Ctx): Party | null {
   return ctx.actor.kind === "member" ? partyOf(loan, ctx.actor.memberId) : null;
 }
-
-const startOfMonthUtc = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 
 // ---------------------------------------------------------------------------
 // request
@@ -114,13 +115,13 @@ export function requestLoan(input: RequestInput, ctx: Ctx): Result<Transition> {
 
   if (borrower.state === "suspended" || (borrower.suspendedUntil && borrower.suspendedUntil > now))
     return fail("borrower_suspended");
-  if (borrower.state !== "active" || !borrower.plan) return fail("borrower_not_active");
+  if (borrower.state !== "active") return fail("borrower_not_active");
   if (copy.minBorrowerTrust > 0 && borrower.trustScore < copy.minBorrowerTrust)
     return fail("trust_below_copy_min");
   if (borrower.trustScore < config.min_trust_score) return fail("trust_below_floor");
   if (borrower.needsTopup) return fail("deposit_topup_required");
   if (!borrower.activation.ok) return fail("activation_required", borrower.activation.reason);
-  if (borrower.openLoanCount >= borrower.plan.concurrentLimit) return fail("at_concurrent_limit");
+  if (borrower.openLoanCount >= config.max_open_loans) return fail("at_concurrent_limit");
   if (!borrower.hasCompletedBorrow && borrower.pendingLoanCount >= 1)
     return fail("new_borrower_one_at_a_time");
 
@@ -147,7 +148,10 @@ export function requestLoan(input: RequestInput, ctx: Ctx): Result<Transition> {
     returnCondition: null,
     autoConfirmedSide: null,
     declineReason: null,
-    poolMonth: null,
+    rentalPaise: copy.rentalPricePaise,
+    platformFeePaise: Math.floor((copy.rentalPricePaise * config.platform_fee_pct) / 100),
+    paymentDueAt: null,
+    paidAt: null,
   };
   return succeed(
     loan,
@@ -158,7 +162,7 @@ export function requestLoan(input: RequestInput, ctx: Ctx): Result<Transition> {
         memberId: loan.lenderId,
         template: "request_received",
         loanId: loan.id,
-        vars: { handoff: input.handoffMethod },
+        vars: { handoff: input.handoffMethod, amountPaise: loan.rentalPaise },
       },
     ],
     "loan.requested",
@@ -197,11 +201,15 @@ function fromRequested(loan: Loan, event: LoanEvent, ctx: Ctx): Result<Transitio
     case "accept": {
       if (actorParty(loan, ctx) !== "lender") return fail("not_lender");
       if (!event.inHandConfirmed) return fail("in_hand_required");
+      // Free loans are paid by definition; priced loans open a payment window (Requirement 5).
+      const free = loan.rentalPaise === 0;
       const next: Loan = {
         ...loan,
         state: "accepted",
         respondedAt: now,
         handoffCode: loan.handoffMethod === "drop_point" ? ctx.newHandoffCode() : null,
+        paymentDueAt: free ? null : new Date(now.getTime() + config.payment_window_hours * HOUR),
+        paidAt: free ? now : null,
       };
       return succeed(
         next,
@@ -209,9 +217,13 @@ function fromRequested(loan: Loan, event: LoanEvent, ctx: Ctx): Result<Transitio
           {
             kind: "notify",
             memberId: loan.borrowerId,
-            template: "request_accepted",
+            template: free ? "request_accepted" : "payment_due",
             loanId: loan.id,
-            vars: { handoff: loan.handoffMethod },
+            vars: {
+              handoff: loan.handoffMethod,
+              amountPaise: loan.rentalPaise,
+              dueAt: next.paymentDueAt?.toISOString() ?? "",
+            },
           },
         ],
         "loan.accepted",
@@ -290,6 +302,7 @@ function fromAccepted(loan: Loan, event: LoanEvent, ctx: Ctx): Result<Transition
     case "confirm_out": {
       const party = actorParty(loan, ctx);
       if (!party) return fail("not_a_party");
+      if (!loan.paidAt) return fail("payment_required");
       const mine = party === "lender" ? loan.outLenderConfirmedAt : loan.outBorrowerConfirmedAt;
       if (mine) return fail("already_confirmed");
 
@@ -334,6 +347,38 @@ function fromAccepted(loan: Loan, event: LoanEvent, ctx: Ctx): Result<Transition
       });
       return succeed(next, effects, "loan.handoff_confirmed");
     }
+    case "pay": {
+      if (ctx.actor.kind !== "system") return fail("not_admin");
+      if (loan.paidAt) return fail("already_paid");
+      if (event.amountPaise !== loan.rentalPaise) return fail("payment_amount_mismatch");
+      const next: Loan = { ...loan, paidAt: now };
+      return succeed(
+        next,
+        [
+          {
+            kind: "mark_payment_captured",
+            loanId: loan.id,
+            razorpayPaymentId: event.razorpayPaymentId,
+            amountPaise: event.amountPaise,
+          },
+          {
+            kind: "notify",
+            memberId: loan.lenderId,
+            template: "payment_received",
+            loanId: loan.id,
+            vars: { amountPaise: loan.rentalPaise, handoff: loan.handoffMethod },
+          },
+          {
+            kind: "notify",
+            memberId: loan.borrowerId,
+            template: "request_accepted",
+            loanId: loan.id,
+            vars: { handoff: loan.handoffMethod, amountPaise: loan.rentalPaise },
+          },
+        ],
+        "loan.paid",
+      );
+    }
     case "auto_confirm_out": {
       if (ctx.actor.kind !== "system") return fail("not_admin");
       const confirmedAt = loan.outLenderConfirmedAt ?? loan.outBorrowerConfirmedAt;
@@ -359,6 +404,32 @@ function fromAccepted(loan: Loan, event: LoanEvent, ctx: Ctx): Result<Transition
       if (ctx.actor.kind !== "system") return fail("not_admin");
       if (loan.outLenderConfirmedAt && loan.outBorrowerConfirmedAt)
         return fail("invalid_transition");
+      // Unpaid past the payment window: quiet expiry, no trust penalty (Requirement 5).
+      if (!loan.paidAt) {
+        if (!loan.paymentDueAt || now < loan.paymentDueAt) return fail("too_early");
+        const next: Loan = { ...loan, state: "expired" };
+        return succeed(
+          next,
+          [
+            { kind: "set_copy_availability", copyId: copy.id, availability: "available" },
+            {
+              kind: "notify",
+              memberId: loan.borrowerId,
+              template: "payment_expired",
+              loanId: loan.id,
+              vars: { amountPaise: loan.rentalPaise },
+            },
+            {
+              kind: "notify",
+              memberId: loan.lenderId,
+              template: "payment_expired",
+              loanId: loan.id,
+              vars: { amountPaise: loan.rentalPaise },
+            },
+          ],
+          "loan.payment_expired",
+        );
+      }
       const since = loan.respondedAt ?? loan.requestedAt;
       if (now.getTime() - since.getTime() < config.handoff_timeout_days * DAY)
         return fail("too_early");
@@ -366,6 +437,10 @@ function fromAccepted(loan: Loan, event: LoanEvent, ctx: Ctx): Result<Transition
       const effects: Effect[] = [
         { kind: "set_copy_availability", copyId: copy.id, availability: "available" },
       ];
+      // The borrower paid for a book that never arrived: refund in full (Requirement 6.6).
+      if (loan.rentalPaise > 0) {
+        effects.push({ kind: "refund_payment", loanId: loan.id, amountPaise: loan.rentalPaise });
+      }
       // No-show on whoever did not confirm (Requirement 6.6).
       if (!loan.outLenderConfirmedAt) {
         effects.push({
@@ -416,7 +491,7 @@ function completeHandoff(
   effects: Effect[],
   autoSide: Party | null,
 ): [Loan, Effect[], string] {
-  const periodDays = ctx.borrower?.plan?.loanPeriodDays ?? 21;
+  const periodDays = ctx.copy.loanPeriodDays;
   const handedOffAt = ctx.now;
   const loan: Loan = {
     ...next,
@@ -425,6 +500,19 @@ function completeHandoff(
     dueAt: new Date(handedOffAt.getTime() + periodDays * DAY),
     autoConfirmedSide: autoSide,
   };
+  // The lender earns the rental once the book is actually out (Requirement 10.1).
+  const lenderShare = loan.rentalPaise - loan.platformFeePaise;
+  if (lenderShare > 0) {
+    effects.push({
+      kind: "ledger",
+      memberId: loan.lenderId,
+      account: "payout",
+      ledgerKind: "rental_credit",
+      amountPaise: lenderShare,
+      loanId: loan.id,
+      note: "Rental earned",
+    });
+  }
   effects.push(
     { kind: "set_copy_availability", copyId: loan.copyId, availability: "on_loan" },
     {
@@ -663,7 +751,6 @@ function completeReturn(
     ...next,
     state: "returned",
     returnedAt: now,
-    poolMonth: startOfMonthUtc(now),
     autoConfirmedSide: autoSide ?? next.autoConfirmedSide,
   };
   const late = loan.dueAt ? now > loan.dueAt : false;

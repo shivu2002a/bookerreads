@@ -11,6 +11,21 @@ export const MAX_REPLACEMENT_PAISE = 100_000;
 /** Fallback when the catalogue has no price. */
 export const DEFAULT_REPLACEMENT_PAISE = 39900;
 export const MIN_BORROWER_TRUST_OPTIONS = [0, 30, 50, 70] as const;
+/** Loan periods a lister may choose (Requirement 2.4). */
+export const LOAN_PERIOD_OPTIONS = [14, 21, 28] as const;
+export const DEFAULT_LOAN_PERIOD_DAYS = 21;
+/** Fallback rental price shown in the wizard when nothing sticky exists (₹30). */
+export const DEFAULT_RENTAL_PRICE_PAISE = 3000;
+
+/** Clamp a lister's rental price into the configured range, rounded to whole rupees. */
+export function clampRentalPrice(valuePaise: number, minPaise: number, maxPaise: number): number {
+  return Math.min(maxPaise, Math.max(minPaise, roundToRupee(valuePaise)));
+}
+
+/** floor(rental × pct / 100): what the platform keeps from one rental (Requirement 10.1). */
+export function platformFee(rentalPaise: number, pct: number): number {
+  return Math.floor((rentalPaise * pct) / 100);
+}
 
 /** Round to whole rupees so the slider and the stored value agree. */
 const roundToRupee = (p: number) => Math.round(p / 100) * 100;

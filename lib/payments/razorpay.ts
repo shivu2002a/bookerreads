@@ -15,26 +15,6 @@ export type RazorpayCustomer = {
   contact?: string;
   notes?: Record<string, string>;
 };
-export type RazorpaySubscription = {
-  id: string;
-  plan_id: string;
-  customer_id?: string;
-  status:
-    | "created"
-    | "authenticated"
-    | "active"
-    | "pending"
-    | "halted"
-    | "cancelled"
-    | "completed"
-    | "expired"
-    | "paused";
-  current_start?: number | null;
-  current_end?: number | null;
-  charge_at?: number | null;
-  short_url?: string;
-  notes?: Record<string, string>;
-};
 export type RazorpayOrder = {
   id: string;
   amount: number;
@@ -111,46 +91,23 @@ export function createRazorpayClient(
       });
     },
 
-    createSubscription(input: {
-      planId: string;
-      customerId: string;
-      memberId: string;
-      planCode: string;
-      offerId?: string;
-    }) {
-      return call<RazorpaySubscription>("POST", "/subscriptions", {
-        plan_id: input.planId,
-        customer_id: input.customerId,
-        total_count: 120, // ten years of monthly cycles; cancelled explicitly when the member leaves
-        quantity: 1,
-        customer_notify: 0,
-        ...(input.offerId ? { offer_id: input.offerId } : {}),
-        notes: { member_id: input.memberId, plan_code: input.planCode },
-      });
-    },
-
-    fetchSubscription(id: string) {
-      return call<RazorpaySubscription>("GET", `/subscriptions/${id}`);
-    },
-
-    /** cancel_at_cycle_end=1 keeps borrowing until the paid period ends (Requirement 4.6). */
-    cancelSubscription(id: string, atCycleEnd = true) {
-      return call<RazorpaySubscription>("POST", `/subscriptions/${id}/cancel`, {
-        cancel_at_cycle_end: atCycleEnd ? 1 : 0,
-      });
-    },
-
     createOrder(input: {
       amountPaise: number;
       memberId: string;
-      purpose: "deposit" | "topup";
+      purpose: "deposit" | "topup" | "rental";
+      /** Required for rentals; lets the webhook route the capture to the loan. */
+      loanId?: string;
       receipt: string;
     }) {
       return call<RazorpayOrder>("POST", "/orders", {
         amount: input.amountPaise,
         currency: "INR",
         receipt: input.receipt.slice(0, 40),
-        notes: { member_id: input.memberId, purpose: input.purpose },
+        notes: {
+          member_id: input.memberId,
+          purpose: input.purpose,
+          ...(input.loanId ? { loan_id: input.loanId } : {}),
+        },
       });
     },
 
@@ -162,12 +119,17 @@ export function createRazorpayClient(
       paymentId: string;
       amountPaise: number;
       memberId: string;
-      purpose: "deposit_refund";
+      purpose: "deposit_refund" | "rental_refund";
+      loanId?: string;
     }) {
       return call<RazorpayRefund>("POST", `/payments/${input.paymentId}/refund`, {
         amount: input.amountPaise,
         speed: "normal",
-        notes: { member_id: input.memberId, purpose: input.purpose },
+        notes: {
+          member_id: input.memberId,
+          purpose: input.purpose,
+          ...(input.loanId ? { loan_id: input.loanId } : {}),
+        },
       });
     },
   };

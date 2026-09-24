@@ -6,6 +6,7 @@ import { dailySteps } from "@/lib/cron/daily";
 import { runCronJob } from "@/lib/cron/runner";
 import { getServerEnv } from "@/lib/env";
 import { flushNotifications, getNotifyDeps } from "@/lib/notify";
+import { getRazorpay } from "@/lib/payments/razorpay";
 import { assertCronSecret } from "@/lib/security/cron";
 
 export const runtime = "nodejs";
@@ -23,14 +24,19 @@ export async function GET(request: Request) {
   const now = new Date();
   const force = new URL(request.url).searchParams.get("force") === "1";
 
-  const outcome = await runCronJob(db, "daily", dailySteps(db, config, getNotifyDeps(), now), {
-    now,
-    force,
+  const outcome = await runCronJob(
+    db,
+    "daily",
+    dailySteps(db, config, getNotifyDeps(), now, { razorpay: getRazorpay() }),
+    {
+      now,
+      force,
     onError: (step, err) => {
       console.error(`cron daily step ${step} failed`, err);
       Sentry.captureException(err, { tags: { cron: "daily", step } });
     },
-  });
+    },
+  );
   await flushNotifications();
   return NextResponse.json(outcome, {
     status: outcome.status === "completed_with_errors" ? 207 : 200,

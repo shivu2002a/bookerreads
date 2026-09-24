@@ -1,47 +1,10 @@
-import {
-  date,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  smallint,
-  text,
-  uniqueIndex,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { date, index, integer, jsonb, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { baseColumns, timestamptz } from "./_shared";
-import { ledgerAccount, ledgerKind, paymentStatus, payoutStatus } from "./enums";
+import { ledgerAccount, ledgerKind, loanPaymentStatus, payoutStatus } from "./enums";
 import { loans } from "./loans";
 import { members } from "./members";
 
-/** Immutable record of each monthly pool computation (Requirement 10.3). */
-export const poolRuns = pgTable("pool_runs", {
-  ...baseColumns,
-  /** First day of the month. Unique makes the run idempotent. */
-  month: date("month", { mode: "date" }).notNull().unique(),
-  revenuePaise: integer("revenue_paise").notNull(),
-  poolPct: smallint("pool_pct").notNull(),
-  poolPaise: integer("pool_paise").notNull(),
-  carryInPaise: integer("carry_in_paise").notNull(),
-  loanCount: integer("loan_count").notNull(),
-  perLoanPaise: integer("per_loan_paise").notNull(),
-  carryOutPaise: integer("carry_out_paise").notNull(),
-  /** Frozen detail: per-lender loan counts and credits. */
-  statement: jsonb("statement").$type<PoolStatement>().notNull(),
-});
-
-export type PoolStatement = {
-  month: string;
-  revenuePaise: number;
-  poolPct: number;
-  carryInPaise: number;
-  poolPaise: number;
-  loanCount: number;
-  perLoanPaise: number;
-  carryOutPaise: number;
-  lenders: Array<{ memberId: string; loanCount: number; creditPaise: number }>;
-};
-
+/** One row per monthly payout to a lender (Requirement 10.3–10.4). */
 export const payouts = pgTable(
   "payouts",
   {
@@ -49,9 +12,8 @@ export const payouts = pgTable(
     memberId: uuid("member_id")
       .notNull()
       .references(() => members.id),
-    poolRunId: uuid("pool_run_id")
-      .notNull()
-      .references(() => poolRuns.id),
+    /** First day of the month the batch covers. */
+    month: date("month", { mode: "date" }).notNull(),
     amountPaise: integer("amount_paise").notNull(),
     upiId: text("upi_id").notNull(),
     status: payoutStatus("status").notNull().default("pending"),
@@ -59,7 +21,12 @@ export const payouts = pgTable(
     batchId: text("batch_id").notNull(),
     failureReason: text("failure_reason"),
   },
-  (t) => [index("payouts_batch_idx").on(t.batchId), index("payouts_member_idx").on(t.memberId)],
+  (t) => [
+    index("payouts_batch_idx").on(t.batchId),
+    index("payouts_member_idx").on(t.memberId),
+    // One payout per member per month keeps batch generation idempotent.
+    uniqueIndex("payouts_member_month_uidx").on(t.memberId, t.month),
+  ],
 );
 
 /**
@@ -78,7 +45,6 @@ export const ledgerEntries = pgTable(
     /** Signed. Positive increases the balance. */
     amountPaise: integer("amount_paise").notNull(),
     loanId: uuid("loan_id").references(() => loans.id),
-    poolRunId: uuid("pool_run_id").references(() => poolRuns.id),
     payoutId: uuid("payout_id").references(() => payouts.id),
     razorpayRef: text("razorpay_ref"),
     note: text("note"),
@@ -88,28 +54,36 @@ export const ledgerEntries = pgTable(
   (t) => [
     index("ledger_member_account_idx").on(t.memberId, t.account),
     index("ledger_loan_idx").on(t.loanId),
-    index("ledger_pool_run_idx").on(t.poolRunId),
   ],
 );
 
-export const subscriptionPayments = pgTable(
-  "subscription_payments",
+/**
+ * One row per Razorpay order raised for a loan's rental price (Requirement 5).
+ * `refund_pending` is set by the loan machine's `refund_payment` effect and
+ * drained by the daily cron, which calls Razorpay and marks `refunded`.
+ */
+export const loanPayments = pgTable(
+  "loan_payments",
   {
     ...baseColumns,
-    memberId: uuid("member_id")
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    borrowerId: uuid("borrower_id")
       .notNull()
       .references(() => members.id),
-    razorpayPaymentId: text("razorpay_payment_id").notNull().unique(),
-    razorpaySubscriptionId: text("razorpay_subscription_id").notNull(),
+    razorpayOrderId: text("razorpay_order_id").notNull().unique(),
+    razorpayPaymentId: text("razorpay_payment_id").unique(),
     amountPaise: integer("amount_paise").notNull(),
-    status: paymentStatus("status").notNull(),
-    paidAt: timestamptz("paid_at").notNull(),
-    /** First day of the month this payment's revenue counts toward. */
-    poolMonth: date("pool_month", { mode: "date" }).notNull(),
+    status: loanPaymentStatus("status").notNull().default("created"),
+    paidAt: timestamptz("paid_at"),
+    razorpayRefundId: text("razorpay_refund_id"),
+    refundedAt: timestamptz("refunded_at"),
+    failureReason: text("failure_reason"),
   },
   (t) => [
-    index("subscription_payments_pool_month_status_idx").on(t.poolMonth, t.status),
-    index("subscription_payments_member_idx").on(t.memberId),
+    index("loan_payments_loan_idx").on(t.loanId),
+    index("loan_payments_status_idx").on(t.status),
   ],
 );
 

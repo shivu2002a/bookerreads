@@ -8,14 +8,10 @@ import {
   loans,
   members,
   notifications,
-  plans,
-  subscriptionPayments,
 } from "@/db/schema";
 import type { AppConfig } from "@/lib/config/schema";
 import { postEntry } from "@/lib/ledger/post";
 import { evaluateActivation } from "./activation";
-
-const startOfMonthUtc = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 
 async function memberEvent(
   tx: DbOrTx,
@@ -42,8 +38,9 @@ async function queueNotification(
 }
 
 /**
- * Sets the member to `active` once plan, deposit, and borrow gate all hold
- * (design.md Activation step 4). Idempotent; safe to call after any money event.
+ * Sets the member to `active` once the deposit and the listing gate both hold
+ * (design.md Activation). Idempotent; safe to call after any deposit payment or
+ * copy creation. Suspended and cancelled members are left alone.
  */
 export async function activateIfEligible(
   tx: DbOrTx,
@@ -52,196 +49,23 @@ export async function activateIfEligible(
   now = new Date(),
 ): Promise<boolean> {
   const [m] = await tx
-    .select({ state: members.state, planId: members.planId, deposit: members.depositBalancePaise })
+    .select({ state: members.state })
     .from(members)
     .where(eq(members.id, memberId));
-  if (!m || !m.planId || m.deposit < config.deposit_paise) return false;
-  if (m.state === "active" || m.state === "suspended") return false;
+  if (!m || m.state !== "registered") return false;
 
-  // Borrow gate must hold too; the plan and deposit checks in evaluateActivation
-  // look at state, so evaluate with those two known-good and check the gate alone.
   const status = await evaluateActivation(tx, memberId, config);
-  if (!status.checks.borrowGate.ok) return false;
+  if (!status.ok) return false;
 
-  await tx
-    .update(members)
-    .set({ state: "active", subscriptionPendingSince: null })
-    .where(eq(members.id, memberId));
+  await tx.update(members).set({ state: "active" }).where(eq(members.id, memberId));
   await memberEvent(tx, memberId, "member.activated", {}, now);
   await queueNotification(tx, memberId, "membership_activated", {}, now);
   return true;
 }
 
-/** subscription.activated / authenticated: attach the plan to the member. */
-export async function attachSubscription(
-  tx: DbOrTx,
-  input: {
-    memberId: string;
-    razorpaySubscriptionId: string;
-    razorpayPlanId: string;
-    customerId?: string | null;
-  },
-  config: AppConfig,
-  now = new Date(),
-) {
-  const [plan] = await tx
-    .select({ id: plans.id })
-    .from(plans)
-    .where(eq(plans.razorpayPlanId, input.razorpayPlanId));
-  if (!plan) throw new Error(`No plan with razorpay_plan_id ${input.razorpayPlanId}`);
-  await tx
-    .update(members)
-    .set({
-      planId: plan.id,
-      razorpaySubscriptionId: input.razorpaySubscriptionId,
-      ...(input.customerId ? { razorpayCustomerId: input.customerId } : {}),
-      subscriptionPendingSince: null,
-    })
-    .where(eq(members.id, input.memberId));
-  await memberEvent(
-    tx,
-    input.memberId,
-    "member.subscription_attached",
-    { planId: plan.id, subscriptionId: input.razorpaySubscriptionId },
-    now,
-  );
-  await activateIfEligible(tx, input.memberId, config, now);
-}
-
-/** subscription.charged: revenue row for the pool; a lapsed member who pays comes back. */
-export async function recordSubscriptionCharge(
-  tx: DbOrTx,
-  input: {
-    memberId: string;
-    razorpayPaymentId: string;
-    razorpaySubscriptionId: string;
-    amountPaise: number;
-    paidAt: Date;
-  },
-  config: AppConfig,
-  now = new Date(),
-) {
-  const inserted = await tx
-    .insert(subscriptionPayments)
-    .values({
-      memberId: input.memberId,
-      razorpayPaymentId: input.razorpayPaymentId,
-      razorpaySubscriptionId: input.razorpaySubscriptionId,
-      amountPaise: input.amountPaise,
-      status: "captured",
-      paidAt: input.paidAt,
-      poolMonth: startOfMonthUtc(input.paidAt),
-    })
-    .onConflictDoNothing({ target: subscriptionPayments.razorpayPaymentId })
-    .returning({ id: subscriptionPayments.id });
-  if (!inserted.length) return { duplicate: true };
-
-  const [m] = await tx
-    .select({ state: members.state })
-    .from(members)
-    .where(eq(members.id, input.memberId));
-  await tx
-    .update(members)
-    .set({ subscriptionPendingSince: null })
-    .where(eq(members.id, input.memberId));
-  if (m?.state === "lapsed") {
-    await tx.update(members).set({ state: "registered" }).where(eq(members.id, input.memberId));
-    await memberEvent(
-      tx,
-      input.memberId,
-      "member.renewed",
-      { paymentId: input.razorpayPaymentId },
-      now,
-    );
-    await activateIfEligible(tx, input.memberId, config, now);
-  }
-  return { duplicate: false };
-}
-
-export async function recordSubscriptionFailure(
-  tx: DbOrTx,
-  input: {
-    memberId: string;
-    razorpayPaymentId: string;
-    razorpaySubscriptionId: string;
-    amountPaise: number;
-    at: Date;
-  },
-  now = new Date(),
-) {
-  await tx
-    .insert(subscriptionPayments)
-    .values({
-      memberId: input.memberId,
-      razorpayPaymentId: input.razorpayPaymentId,
-      razorpaySubscriptionId: input.razorpaySubscriptionId,
-      amountPaise: input.amountPaise,
-      status: "failed",
-      paidAt: input.at,
-      poolMonth: startOfMonthUtc(input.at),
-    })
-    .onConflictDoNothing({ target: subscriptionPayments.razorpayPaymentId });
-  await memberEvent(
-    tx,
-    input.memberId,
-    "member.payment_failed",
-    { paymentId: input.razorpayPaymentId },
-    now,
-  );
-}
-
-/** subscription.pending: Razorpay is retrying; start the 7-day clock (Requirement 4.5). */
-export async function markSubscriptionPending(tx: DbOrTx, memberId: string, now = new Date()) {
-  await tx
-    .update(members)
-    .set({ subscriptionPendingSince: now })
-    .where(and(eq(members.id, memberId), sql`${members.subscriptionPendingSince} is null`));
-  await queueNotification(tx, memberId, "payment_retrying", {}, now);
-}
-
-/** Blocks new requests, keeps existing loans (Requirement 4.5). */
-export async function lapseMember(
-  tx: DbOrTx,
-  memberId: string,
-  reason: "halted" | "pending_timeout",
-  now = new Date(),
-) {
-  const [m] = await tx
-    .select({ state: members.state })
-    .from(members)
-    .where(eq(members.id, memberId));
-  if (!m || m.state !== "active") return false;
-  await tx.update(members).set({ state: "lapsed" }).where(eq(members.id, memberId));
-  await memberEvent(tx, memberId, "member.lapsed", { reason }, now);
-  await queueNotification(tx, memberId, "membership_lapsed", {}, now);
-  return true;
-}
-
-/** Members whose subscription has been pending longer than the config window. */
-export async function findMembersToLapse(
-  db: DbOrTx,
-  config: AppConfig,
-  now = new Date(),
-): Promise<string[]> {
-  const cutoff = new Date(now.getTime() - config.subscription_pending_to_lapsed_days * 86_400_000);
-  const rows = await db
-    .select({ id: members.id })
-    .from(members)
-    .where(and(eq(members.state, "active"), sql`${members.subscriptionPendingSince} <= ${cutoff}`));
-  return rows.map((r) => r.id);
-}
-
-/** subscription.cancelled (after cancel_at_cycle_end) or an admin cancellation. */
+/** Member leaves: blocks new requests; the deposit refund follows Requirement 4.6. */
 export async function cancelMember(tx: DbOrTx, memberId: string, now = new Date()) {
-  await tx
-    .update(members)
-    .set({
-      state: "cancelled",
-      planId: null,
-      razorpaySubscriptionId: null,
-      subscriptionPendingSince: null,
-    })
-    .where(eq(members.id, memberId));
+  await tx.update(members).set({ state: "cancelled" }).where(eq(members.id, memberId));
   await memberEvent(tx, memberId, "member.cancelled", {}, now);
   await queueNotification(tx, memberId, "membership_cancelled", {}, now);
 }
@@ -409,7 +233,7 @@ export async function deleteAccount(
     .where(and(eq(copies.ownerId, memberId), eq(copies.availability, "available")));
   await tx
     .update(members)
-    .set({ deletedAt: now, state: "cancelled", displayName: null, upiId: null, planId: null })
+    .set({ deletedAt: now, state: "cancelled", displayName: null, upiId: null })
     .where(eq(members.id, memberId));
   await memberEvent(tx, memberId, "member.deleted", { forfeitedPaise: forfeited }, now);
   return { ok: true, forfeitedPaise: forfeited };

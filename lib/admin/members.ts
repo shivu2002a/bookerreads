@@ -10,13 +10,13 @@ import {
   loans,
   members,
   notifications,
-  plans,
   trustEvents,
 } from "@/db/schema";
 import { hashPhone } from "@/lib/auth/phone-hash";
 import { normaliseIndianMobile } from "@/lib/auth/phone";
 import type { AppConfig } from "@/lib/config/schema";
 import { postEntry } from "@/lib/ledger/post";
+import { activateIfEligible } from "@/lib/members/membership";
 import { enqueue } from "@/lib/notify/send";
 import { adminAction } from "./act";
 
@@ -40,11 +40,9 @@ export async function searchMembers(db: DbOrTx, query: string, limit = 25) {
       createdAt: members.createdAt,
       deletedAt: members.deletedAt,
       cluster: clusters.name,
-      plan: plans.name,
     })
     .from(members)
     .leftJoin(clusters, eq(clusters.id, members.clusterId))
-    .leftJoin(plans, eq(plans.id, members.planId))
     .where(where)
     .orderBy(desc(members.createdAt))
     .limit(limit);
@@ -52,10 +50,9 @@ export async function searchMembers(db: DbOrTx, query: string, limit = 25) {
 
 export async function getMemberDetail(db: DbOrTx, memberId: string) {
   const [m] = await db
-    .select({ member: members, cluster: clusters.name, plan: plans.name })
+    .select({ member: members, cluster: clusters.name })
     .from(members)
     .leftJoin(clusters, eq(clusters.id, members.clusterId))
-    .leftJoin(plans, eq(plans.id, members.planId))
     .where(eq(members.id, memberId));
   if (!m) return null;
   const [copyRows, loanRows, ledger, trust, actions, notes] = await Promise.all([
@@ -137,10 +134,10 @@ export async function suspendMember(
   );
 }
 
-/** Back to `active` if a plan is attached, else `registered`. */
+/** Back to `registered`; activation re-runs on the next deposit or listing. */
 export async function reinstateMember(
   db: Db,
-  input: { adminId: string; memberId: string; reason: string },
+  input: { adminId: string; memberId: string; reason: string; config: AppConfig },
 ) {
   return adminAction(
     db,
@@ -151,14 +148,11 @@ export async function reinstateMember(
       reason: input.reason,
     },
     async (tx) => {
-      const [m] = await tx
-        .select({ planId: members.planId })
-        .from(members)
-        .where(eq(members.id, input.memberId));
       await tx
         .update(members)
-        .set({ state: m?.planId ? "active" : "registered", suspendedUntil: null })
+        .set({ state: "registered", suspendedUntil: null })
         .where(eq(members.id, input.memberId));
+      await activateIfEligible(tx, input.memberId, input.config);
       await tx.insert(events).values({
         aggregate: "member",
         aggregateId: input.memberId,

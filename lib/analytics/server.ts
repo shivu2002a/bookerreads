@@ -21,8 +21,8 @@ export type AnalyticsEvent =
   | "loan_extended"
   | "dispute_opened"
   | "member_activated"
-  | "member_lapsed"
-  | "pool_run_completed";
+  | "rental_paid"
+  | "payout_batch_generated";
 
 let client: PostHog | null | undefined;
 

@@ -29,7 +29,11 @@ export default async function AddCopyPage() {
           {config.new_account_age_days} days. You can add {allowance} more.
         </p>
       )}
-      <AddCopyWizard remaining={Number.isFinite(allowance) ? allowance : null} />
+      <AddCopyWizard
+        remaining={Number.isFinite(allowance) ? allowance : null}
+        rentalBounds={{ min: config.rental_price_min_paise, max: config.rental_price_max_paise }}
+        platformFeePct={config.platform_fee_pct}
+      />
     </div>
   );
 }

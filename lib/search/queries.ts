@@ -186,6 +186,8 @@ export type BookPageCopy = {
   allowedHandoffs: (typeof copies.$inferSelect)["allowedHandoffs"];
   minBorrowerTrust: number;
   replacementValuePaise: number;
+  rentalPricePaise: number;
+  loanPeriodDays: number;
   notes: string | null;
   listingPhotoPath: string;
   lender: { id: string; displayName: string; trustScore: number; acceptanceRate: number | null };
@@ -253,6 +255,8 @@ export async function getBookPage(
           allowedHandoffs: copies.allowedHandoffs,
           minBorrowerTrust: copies.minBorrowerTrust,
           replacementValuePaise: copies.replacementValuePaise,
+          rentalPricePaise: copies.rentalPricePaise,
+          loanPeriodDays: copies.loanPeriodDays,
           notes: copies.notes,
           listingPhotoPath: copies.listingPhotoPath,
           lenderId: members.id,
@@ -299,6 +303,8 @@ export async function getBookPage(
       allowedHandoffs: r.allowedHandoffs,
       minBorrowerTrust: r.minBorrowerTrust,
       replacementValuePaise: r.replacementValuePaise,
+      rentalPricePaise: r.rentalPricePaise,
+      loanPeriodDays: r.loanPeriodDays,
       notes: r.notes,
       listingPhotoPath: r.listingPhotoPath,
       lender: {

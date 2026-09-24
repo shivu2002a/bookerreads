@@ -1,7 +1,7 @@
 /**
  * Decides how the request CTA renders for a copy on the book page
  * (Requirements 3.4, 4.2, 9.3, 9.4). Pure; extended in Phase 5 with the
- * membership gates (plan, deposit, borrow gate, suspension, concurrent limit).
+ * membership gates (deposit, listing gate, suspension, concurrent limit).
  */
 
 export type GateViewer = {
@@ -10,7 +10,7 @@ export type GateViewer = {
   memberId: string | null;
   clusterId: string | null;
   trustScore: number | null;
-  state: "registered" | "active" | "lapsed" | "suspended" | "cancelled" | null;
+  state: "registered" | "active" | "suspended" | "cancelled" | null;
 };
 
 export type GateCopy = {
@@ -40,7 +40,7 @@ export type GateDecision =
         | "needs_activation"
         | "trust_floor"
         | "suspended"
-        | "lapsed";
+
       hint: string;
     };
 
@@ -77,18 +77,12 @@ export function decideRequestGate(
       reason: "suspended",
       hint: "Your account is suspended from borrowing for now.",
     };
-  if (viewer.state === "lapsed")
-    return {
-      kind: "blocked",
-      reason: "lapsed",
-      hint: "Your plan has lapsed. Renew to request books.",
-    };
-  // Registered (no plan) and cancelled members go through activation at request time (Requirement 4.2).
+  // Registered and cancelled members go through activation at request time (Requirement 4.2).
   if (viewer.state !== "active")
     return {
       kind: "blocked",
       reason: "needs_activation",
-      hint: "Pick a plan and pay the deposit to start borrowing.",
+      hint: "Pay the refundable deposit and list a book to start borrowing.",
     };
   return { kind: "request" };
 }

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db, Tx } from "@/db/client";
-import { copies, dropPoints, events, loans, members, plans } from "@/db/schema";
+import { copies, dropPoints, events, loans, members } from "@/db/schema";
 import type { AppConfig } from "@/lib/config/schema";
 import { evaluateActivation } from "@/lib/members/activation";
 import { applyEffects } from "./effects";
@@ -42,6 +42,9 @@ export function generateHandoffCode(): string {
 export function machineConfig(config: AppConfig): MachineConfig {
   return {
     request_timeout_hours: config.request_timeout_hours,
+    payment_window_hours: config.payment_window_hours,
+    platform_fee_pct: config.platform_fee_pct,
+    max_open_loans: config.max_open_loans,
     handoff_timeout_days: config.handoff_timeout_days,
     handoff_auto_confirm_hours: config.handoff_auto_confirm_hours,
     extension_days: config.extension_days,
@@ -81,7 +84,10 @@ export function rowToLoan(r: LoanRow): Loan {
     returnCondition: r.returnCondition,
     autoConfirmedSide: r.autoConfirmedSide,
     declineReason: r.declineReason,
-    poolMonth: r.poolMonth,
+    rentalPaise: r.rentalPaise,
+    platformFeePaise: r.platformFeePaise,
+    paymentDueAt: r.paymentDueAt,
+    paidAt: r.paidAt,
   };
 }
 
@@ -109,7 +115,10 @@ function loanToRow(l: Loan): typeof loans.$inferInsert {
     returnCondition: l.returnCondition,
     autoConfirmedSide: l.autoConfirmedSide,
     declineReason: l.declineReason,
-    poolMonth: l.poolMonth,
+    rentalPaise: l.rentalPaise,
+    platformFeePaise: l.platformFeePaise,
+    paymentDueAt: l.paymentDueAt,
+    paidAt: l.paidAt,
   };
 }
 
@@ -131,6 +140,8 @@ async function lockCopy(tx: Tx, copyId: string): Promise<CopySnapshot | null> {
     declineCount: c.declineCount,
     verificationStatus: c.verificationStatus,
     replacementValuePaise: c.replacementValuePaise,
+    rentalPricePaise: c.rentalPricePaise,
+    loanPeriodDays: c.loanPeriodDays,
   };
 }
 
@@ -148,11 +159,8 @@ async function borrowerSnapshot(
       suspendedUntil: members.suspendedUntil,
       needsTopup: members.needsTopup,
       firstBorrowCompletedAt: members.firstBorrowCompletedAt,
-      concurrentLimit: plans.concurrentLimit,
-      loanPeriodDays: plans.loanPeriodDays,
     })
     .from(members)
-    .leftJoin(plans, eq(plans.id, members.planId))
     .where(eq(members.id, memberId));
   if (!m) return null;
 
@@ -173,10 +181,6 @@ async function borrowerSnapshot(
     trustScore: m.trustScore,
     suspendedUntil: m.suspendedUntil,
     needsTopup: m.needsTopup,
-    plan:
-      m.concurrentLimit != null && m.loanPeriodDays != null
-        ? { concurrentLimit: m.concurrentLimit, loanPeriodDays: m.loanPeriodDays }
-        : null,
     openLoanCount: Number(counts.open),
     pendingLoanCount: Number(counts.pending),
     hasCompletedBorrow: m.firstBorrowCompletedAt !== null,
@@ -310,7 +314,7 @@ export async function applyLoanEvent(
     const [row] = await tx.select().from(loans).where(eq(loans.id, loanId)).for("update");
     const loan = rowToLoan(row);
 
-    // Borrower snapshot is needed for the due date (plan period) at handoff; cheap enough to load always.
+    // Borrower snapshot is only needed for request guards, but it is cheap enough to load always.
     const borrower = await borrowerSnapshot(tx, loan.borrowerId, config);
     const dropPoint = await dropPointSnapshot(tx, loan.dropPointId);
 

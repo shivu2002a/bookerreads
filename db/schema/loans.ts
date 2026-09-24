@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm";
-import { boolean, date, index, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  date,
+  index,
+  integer,
+  pgTable,
+  text,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { baseColumns, timestamptz } from "./_shared";
 import { books } from "./books";
 import { copies } from "./copies";
@@ -52,8 +61,14 @@ export const loans = pgTable(
     /** Which side's confirmation was assumed when the other never confirmed (Requirement 6.4). */
     autoConfirmedSide: loanParty("auto_confirmed_side"),
     declineReason: declineReason("decline_reason"),
-    /** First day of the month this loan counts toward for the pool; set on `returned`. */
-    poolMonth: date("pool_month", { mode: "date" }),
+    /** Snapshot of the copy's rental price when requested (Requirement 5). */
+    rentalPaise: integer("rental_paise").notNull().default(0),
+    /** floor(rental × platform_fee_pct / 100), fixed at request time. */
+    platformFeePaise: integer("platform_fee_paise").notNull().default(0),
+    /** Set on accept when rental > 0; the borrower must pay before this or the loan expires. */
+    paymentDueAt: timestamptz("payment_due_at"),
+    /** Set by the `pay` event, or equal to responded_at for ₹0 rentals. */
+    paidAt: timestamptz("paid_at"),
     /** Last reminder date, used with notifications for the once-per-day rule. */
     lastReminderOn: date("last_reminder_on", { mode: "date" }),
   },
@@ -61,7 +76,7 @@ export const loans = pgTable(
     index("loans_borrower_state_idx").on(t.borrowerId, t.state),
     index("loans_lender_state_idx").on(t.lenderId, t.state),
     index("loans_state_due_idx").on(t.state, t.dueAt),
-    index("loans_pool_month_idx").on(t.poolMonth),
+    index("loans_state_payment_due_idx").on(t.state, t.paymentDueAt),
     index("loans_copy_idx").on(t.copyId),
     // At most one open loan per copy. Enforced in the DB so two concurrent
     // requests cannot both succeed (design.md Data Model, loans).

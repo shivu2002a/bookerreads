@@ -1,7 +1,8 @@
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import type { DbOrTx } from "@/db/client";
 import { books, copies, events, loans } from "@/db/schema";
-import { canRelist, canUnlist, clampReplacement } from "./rules";
+import type { AppConfig } from "@/lib/config/schema";
+import { canRelist, canUnlist, clampRentalPrice, clampReplacement } from "./rules";
 import type { CopyDetailsInput } from "./schema";
 
 export type ManageCopyError = "not_found" | "not_owner" | "on_loan" | "not_unlisted";
@@ -78,6 +79,7 @@ export async function updateCopyDetails(
   copyId: string,
   ownerId: string,
   details: CopyDetailsInput,
+  config: Pick<AppConfig, "rental_price_min_paise" | "rental_price_max_paise">,
 ): Promise<{ ok: true } | { ok: false; error: ManageCopyError }> {
   const loaded = await loadOwned(db, copyId, ownerId);
   if (loaded.error) return { ok: false, error: loaded.error };
@@ -93,6 +95,12 @@ export async function updateCopyDetails(
         details.replacementValuePaise,
         book?.listPricePaise ?? null,
       ),
+      rentalPricePaise: clampRentalPrice(
+        details.rentalPricePaise,
+        config.rental_price_min_paise,
+        config.rental_price_max_paise,
+      ),
+      loanPeriodDays: details.loanPeriodDays,
       allowedHandoffs: details.allowedHandoffs,
       minBorrowerTrust: details.minBorrowerTrust,
       notes: details.notes || null,
@@ -114,6 +122,8 @@ export type ShelfCopy = {
   verificationStatus: (typeof copies.$inferSelect)["verificationStatus"];
   condition: (typeof copies.$inferSelect)["condition"];
   replacementValuePaise: number;
+  rentalPricePaise: number;
+  loanPeriodDays: number;
   listingPhotoPath: string;
   allowedHandoffs: (typeof copies.$inferSelect)["allowedHandoffs"];
   minBorrowerTrust: number;
@@ -144,6 +154,8 @@ export async function listShelf(db: DbOrTx, ownerId: string): Promise<ShelfCopy[
       verificationStatus: copies.verificationStatus,
       condition: copies.condition,
       replacementValuePaise: copies.replacementValuePaise,
+      rentalPricePaise: copies.rentalPricePaise,
+      loanPeriodDays: copies.loanPeriodDays,
       listingPhotoPath: copies.listingPhotoPath,
       allowedHandoffs: copies.allowedHandoffs,
       minBorrowerTrust: copies.minBorrowerTrust,
@@ -168,6 +180,8 @@ export async function listShelf(db: DbOrTx, ownerId: string): Promise<ShelfCopy[
     verificationStatus: r.verificationStatus,
     condition: r.condition,
     replacementValuePaise: r.replacementValuePaise,
+    rentalPricePaise: r.rentalPricePaise,
+    loanPeriodDays: r.loanPeriodDays,
     listingPhotoPath: r.listingPhotoPath,
     allowedHandoffs: r.allowedHandoffs,
     minBorrowerTrust: r.minBorrowerTrust,

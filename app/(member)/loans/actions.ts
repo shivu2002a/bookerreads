@@ -10,6 +10,15 @@ import { loadConfig } from "@/lib/config/load";
 import { applyLoanEvent, createLoanRequest } from "@/lib/loans/persist";
 import { isLoanParty, listMessagesSince, sendLoanMessage } from "@/lib/loans/queries";
 import type { Actor, LoanEvent } from "@/lib/loans/types";
+import { getServerEnv } from "@/lib/env";
+import { paymentError, verifyCheckout } from "@/lib/payments/checkout-server";
+import { getRazorpay } from "@/lib/payments/razorpay";
+import {
+  createRentalOrder,
+  loanIdForOrder,
+  recordRentalCapture,
+  type RentalOrderError,
+} from "@/lib/payments/rental";
 import { verifyUploadedPhoto } from "@/lib/photos/storage";
 import { flushNotifications } from "@/lib/notify";
 
@@ -237,4 +246,82 @@ export async function fetchMessages(
   return ok(
     rows.map((m) => ({ id: m.id, senderId: m.senderId, body: m.body, at: m.at.toISOString() })),
   );
+}
+
+// ---------------------------------------------------------------------------
+// rental payment (Requirement 5)
+// ---------------------------------------------------------------------------
+
+export type RentalCheckoutHandle = {
+  keyId: string;
+  orderId: string;
+  amountPaise: number;
+  description: string;
+};
+
+const RENTAL_ORDER_MESSAGES: Record<RentalOrderError, string> = {
+  loan_not_found: "That loan no longer exists.",
+  not_borrower: "Only the borrower can pay for this loan.",
+  not_payable: "This loan doesn't need a payment right now.",
+  already_paid: "This loan is already paid.",
+  window_closed: "The payment window has closed; the request has expired.",
+};
+
+/** Borrower taps Pay on an accepted, priced loan. */
+export async function createRentalCheckout(
+  loanId: string,
+): Promise<ActionResult<RentalCheckoutHandle>> {
+  const member = await requireOnboardedMember();
+  const id = uuid.safeParse(loanId);
+  if (!id.success) return err("invalid", "Bad loan id.");
+  try {
+    const res = await createRentalOrder(getDb(), getRazorpay(), {
+      loanId: id.data,
+      memberId: member.id,
+    });
+    if (!res.ok) return err(res.error, RENTAL_ORDER_MESSAGES[res.error]);
+    return ok({
+      keyId: getServerEnv().RAZORPAY_KEY_ID,
+      orderId: res.order.orderId,
+      amountPaise: res.order.amountPaise,
+      description: "Book rental",
+    });
+  } catch (e) {
+    return paymentError(e, "Couldn't start the payment. Please try again in a moment.");
+  }
+}
+
+const rentalCheckoutSchema = z.object({
+  loanId: uuid,
+  razorpay_payment_id: z.string().min(1),
+  razorpay_order_id: z.string().min(1),
+  razorpay_signature: z.string().min(1),
+});
+
+/** Checkout success callback; the webhook applies the same event and is a no-op afterwards. */
+export async function confirmRentalCheckout(
+  input: z.input<typeof rentalCheckoutSchema>,
+): Promise<ActionResult<{ paid: true }>> {
+  const member = await requireOnboardedMember();
+  const parsed = rentalCheckoutSchema.safeParse(input);
+  if (!parsed.success) return err("invalid", "Payment details were incomplete.");
+  const verified = await verifyCheckout(parsed.data, member.id);
+  if (!verified.ok) return verified;
+  const { payment, paymentId, orderId } = verified.data;
+
+  const db = getDb();
+  const loanId = await loanIdForOrder(db, orderId);
+  if (!loanId || loanId !== parsed.data.loanId)
+    return err("mismatch", "That payment doesn't belong to this loan.");
+
+  const res = await recordRentalCapture(
+    db,
+    { loanId, razorpayPaymentId: paymentId, amountPaise: payment.amount },
+    await loadConfig(db),
+  );
+  if (!res.ok) return err(res.error.code, res.error.message);
+  track(member.id, "rental_paid", { loanId, amountPaise: payment.amount });
+  revalidateLoan(loanId);
+  await flushNotifications();
+  return ok({ paid: true });
 }

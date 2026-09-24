@@ -5,6 +5,7 @@ import {
   disputes,
   dropPoints,
   events,
+  loanPayments,
   loanPhotos,
   members,
   notifications,
@@ -148,6 +149,34 @@ export async function applyEffects(
         }
         break;
       }
+      case "mark_payment_captured":
+        // The order row was created when the borrower opened checkout; the webhook or the
+        // verified checkout callback closes it. Idempotent on the unique payment id.
+        await tx
+          .update(loanPayments)
+          .set({
+            status: "captured",
+            razorpayPaymentId: e.razorpayPaymentId,
+            paidAt: now,
+            updatedAt: now,
+          })
+          .where(
+            sql`${loanPayments.loanId} = ${e.loanId} and ${loanPayments.status} = 'created' and ${loanPayments.amountPaise} = ${e.amountPaise}`,
+          );
+        break;
+      case "refund_payment":
+        // Refunds call an external API, so the cron does the call; here we only flag the row.
+        await tx
+          .update(loanPayments)
+          .set({ status: "refund_pending", updatedAt: now })
+          .where(sql`${loanPayments.loanId} = ${e.loanId} and ${loanPayments.status} = 'captured'`);
+        await tx.insert(events).values({
+          aggregate: "loan",
+          aggregateId: e.loanId,
+          type: "payment.refund_requested",
+          payload: { amountPaise: e.amountPaise },
+        });
+        break;
       case "create_dispute":
         await tx.insert(disputes).values({
           loanId: e.loanId,

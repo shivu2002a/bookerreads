@@ -51,7 +51,14 @@ export type Loan = {
   returnCondition: CopyCondition | null;
   autoConfirmedSide: Party | null;
   declineReason: DeclineReason | null;
-  poolMonth: Date | null;
+  /** Snapshot of the copy's rental price at request time (Requirement 5). */
+  rentalPaise: number;
+  /** floor(rental × platform_fee_pct / 100), fixed at request time (Requirement 10.1). */
+  platformFeePaise: number;
+  /** Set on accept when rental > 0; unpaid past this expires the loan. */
+  paymentDueAt: Date | null;
+  /** Set by `pay`, or equal to respondedAt for free loans. */
+  paidAt: Date | null;
 };
 
 export type Actor = { kind: "member"; memberId: string; isAdmin: boolean } | { kind: "system" };
@@ -59,18 +66,17 @@ export type Actor = { kind: "member"; memberId: string; isAdmin: boolean } | { k
 /** Snapshot of the borrower needed for request guards. Loaded by the persistence layer. */
 export type BorrowerSnapshot = {
   id: string;
-  state: "registered" | "active" | "lapsed" | "suspended" | "cancelled";
+  state: "registered" | "active" | "suspended" | "cancelled";
   clusterId: string | null;
   trustScore: number;
   suspendedUntil: Date | null;
   needsTopup: boolean;
-  plan: { concurrentLimit: number; loanPeriodDays: number } | null;
   /** Loans in requested/accepted/on_loan/overdue as borrower. */
   openLoanCount: number;
   /** Loans in requested/accepted as borrower (new-borrower rule). */
   pendingLoanCount: number;
   hasCompletedBorrow: boolean;
-  /** Result of the Phase 5 activation evaluation (borrow gate + deposit). */
+  /** Result of the activation evaluation (deposit + listing gate). */
   activation: { ok: true } | { ok: false; reason: string };
 };
 
@@ -85,6 +91,10 @@ export type CopySnapshot = {
   declineCount: number;
   verificationStatus: "unverified" | "verified";
   replacementValuePaise: number;
+  /** Lister-set price per loan; 0 = free (Requirement 2.4). */
+  rentalPricePaise: number;
+  /** Lister-set loan period; drives due_at (Requirement 6.5). */
+  loanPeriodDays: number;
 };
 
 export type DropPointSnapshot = {
@@ -97,6 +107,9 @@ export type DropPointSnapshot = {
 
 export type MachineConfig = {
   request_timeout_hours: number;
+  payment_window_hours: number;
+  platform_fee_pct: number;
+  max_open_loans: number;
   handoff_timeout_days: number;
   handoff_auto_confirm_hours: number;
   extension_days: number;
@@ -130,6 +143,8 @@ export type LoanEvent =
       code?: string;
     }
   | { type: "auto_confirm_out" }
+  /** Rental captured (webhook or verified checkout). System actor only. */
+  | { type: "pay"; razorpayPaymentId: string; amountPaise: number }
   | { type: "extend" }
   | { type: "overdue_tick" }
   | { type: "confirm_return"; photoPath?: string; code?: string; condition?: CopyCondition }
@@ -145,6 +160,7 @@ export const LOAN_EVENT_TYPES: LoanEventType[] = [
   "timeout",
   "confirm_out",
   "auto_confirm_out",
+  "pay",
   "extend",
   "overdue_tick",
   "confirm_return",
@@ -178,6 +194,10 @@ export type NotificationTemplate =
   | "request_expired"
   | "handoff_expired"
   | "handoff_confirmed_one_side"
+  | "payment_due"
+  | "payment_received"
+  | "payment_expired"
+  | "payment_refunded"
   | "handoff_auto_confirmed"
   | "on_loan"
   | "extended"
@@ -217,10 +237,19 @@ export type Effect =
       kind: "ledger";
       memberId: string;
       account: "deposit" | "payout";
-      ledgerKind: "deposit_charge" | "lost_book_credit";
+      ledgerKind: "deposit_charge" | "lost_book_credit" | "rental_credit";
       amountPaise: number;
       loanId: string;
       note: string;
+    }
+  /** Mark the loan's captured rental for refund; the cron calls Razorpay (design.md Rental payment 6). */
+  | { kind: "refund_payment"; loanId: string; amountPaise: number }
+  /** Record the captured Razorpay payment against the loan's order. */
+  | {
+      kind: "mark_payment_captured";
+      loanId: string;
+      razorpayPaymentId: string;
+      amountPaise: number;
     }
   | { kind: "create_dispute"; loanId: string; openedBy: string; reason: string }
   | {
@@ -263,6 +292,9 @@ export type LoanErrorCode =
   | "too_early"
   | "already_confirmed_by_both"
   | "invalid_charge"
+  | "payment_required"
+  | "already_paid"
+  | "payment_amount_mismatch"
   // request guards
   | "own_copy"
   | "copy_unavailable"

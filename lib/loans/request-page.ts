@@ -9,6 +9,8 @@ export type RequestPageData = {
     availability: string;
     allowedHandoffs: Array<"meetup" | "drop_point" | "courier">;
     replacementValuePaise: number;
+    rentalPricePaise: number;
+    loanPeriodDays: number;
     clusterId: string;
     ownerId: string;
   };
@@ -26,6 +28,8 @@ export async function loadRequestPage(db: DbOrTx, copyId: string): Promise<Reque
       availability: copies.availability,
       allowedHandoffs: copies.allowedHandoffs,
       replacementValuePaise: copies.replacementValuePaise,
+      rentalPricePaise: copies.rentalPricePaise,
+      loanPeriodDays: copies.loanPeriodDays,
       clusterId: copies.clusterId,
       ownerId: copies.ownerId,
       bookId: books.id,
@@ -61,6 +65,8 @@ export async function loadRequestPage(db: DbOrTx, copyId: string): Promise<Reque
       availability: row.availability,
       allowedHandoffs: row.allowedHandoffs,
       replacementValuePaise: row.replacementValuePaise,
+      rentalPricePaise: row.rentalPricePaise,
+      loanPeriodDays: row.loanPeriodDays,
       clusterId: row.clusterId,
       ownerId: row.ownerId,
     },

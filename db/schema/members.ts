@@ -11,7 +11,6 @@ import {
 import { baseColumns, timestamptz } from "./_shared";
 import { clusters } from "./clusters";
 import { memberState } from "./enums";
-import { plans } from "./plans";
 
 export const members = pgTable(
   "members",
@@ -25,11 +24,7 @@ export const members = pgTable(
     clusterId: uuid("cluster_id").references(() => clusters.id),
     state: memberState("state").notNull().default("registered"),
     suspendedUntil: timestamptz("suspended_until"),
-    planId: uuid("plan_id").references(() => plans.id),
     razorpayCustomerId: text("razorpay_customer_id"),
-    razorpaySubscriptionId: text("razorpay_subscription_id"),
-    /** Set when Razorpay reports the subscription pending; cleared on charge. Drives lapse after 7 days. */
-    subscriptionPendingSince: timestamptz("subscription_pending_since"),
     /** Cached sums of ledger_entries; recomputed in the same transaction as each entry. */
     depositBalancePaise: integer("deposit_balance_paise").notNull().default(0),
     payoutBalancePaise: integer("payout_balance_paise").notNull().default(0),

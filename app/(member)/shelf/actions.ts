@@ -19,6 +19,8 @@ function formToDetails(formData: FormData) {
   return {
     condition: formData.get("condition"),
     replacementValuePaise: formData.get("replacementValuePaise"),
+    rentalPricePaise: formData.get("rentalPricePaise") ?? 0,
+    loanPeriodDays: formData.get("loanPeriodDays") ?? 21,
     allowedHandoffs: formData.getAll("allowedHandoffs"),
     minBorrowerTrust: formData.get("minBorrowerTrust") ?? 0,
     notes: formData.get("notes") ?? "",
@@ -153,7 +155,8 @@ export async function updateCopyAction(_prev: unknown, formData: FormData): Prom
   if (!id.success) return err("invalid", "Bad copy id.");
   if (!details.success)
     return err("invalid", "Check the highlighted fields.", fieldErrors(details.error.issues));
-  const res = await updateCopyDetails(getDb(), id.data, member.id, details.data);
+  const db = getDb();
+  const res = await updateCopyDetails(db, id.data, member.id, details.data, await loadConfig(db));
   if (!res.ok) return err(res.error, MANAGE_MESSAGES[res.error]);
   revalidatePath("/shelf");
   return ok();

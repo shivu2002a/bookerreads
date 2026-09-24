@@ -2,7 +2,8 @@ import { and, count, eq, inArray } from "drizzle-orm";
 import type { DbOrTx } from "@/db/client";
 import { books, copies, events, members } from "@/db/schema";
 import type { AppConfig } from "@/lib/config/schema";
-import { clampReplacement, remainingListingAllowance } from "./rules";
+import { activateIfEligible } from "@/lib/members/membership";
+import { clampRentalPrice, clampReplacement, remainingListingAllowance } from "./rules";
 import type { CopyDetailsInput } from "./schema";
 
 export type CreateCopyInput = CopyDetailsInput & {
@@ -85,6 +86,12 @@ export async function createCopy(
       clusterId: owner.clusterId,
       condition: input.condition,
       replacementValuePaise: clampReplacement(input.replacementValuePaise, book.listPricePaise),
+      rentalPricePaise: clampRentalPrice(
+        input.rentalPricePaise,
+        config.rental_price_min_paise,
+        config.rental_price_max_paise,
+      ),
+      loanPeriodDays: input.loanPeriodDays,
       listingPhotoPath: input.listingPhotoPath,
       notes: input.notes || null,
       allowedHandoffs: input.allowedHandoffs,
@@ -104,8 +111,12 @@ export async function createCopy(
       bookId,
       condition: copy.condition,
       replacementValuePaise: copy.replacementValuePaise,
+      rentalPricePaise: copy.rentalPricePaise,
     },
   });
+
+  // A listing may be the last thing standing between the owner and borrowing (Requirement 4.5).
+  await activateIfEligible(db, owner.id, config, now);
 
   return { ok: true, copy };
 }

@@ -8,36 +8,20 @@ import { events, ledgerEntries, members } from "@/db/schema";
 import { err, ok, type ActionResult } from "@/lib/actions/result";
 import { requireMember } from "@/lib/auth/current-member";
 import { loadConfig } from "@/lib/config/load";
-import { checkRefundEligibility, deleteAccount } from "@/lib/members/membership";
-import { getRazorpay, RazorpayError } from "@/lib/payments/razorpay";
+import { cancelMember, checkRefundEligibility, deleteAccount } from "@/lib/members/membership";
+import { getRazorpay } from "@/lib/payments/razorpay";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 /**
- * Requirement 4.6: cancel at the end of the paid period. Razorpay sends
- * subscription.cancelled when the period ends; until then the member stays
- * active and can keep borrowing.
+ * Requirement 4.6: leaving blocks new requests immediately (there is no paid
+ * period to run down). Existing loans continue; the deposit is refunded once
+ * nothing is open.
  */
 export async function cancelMembership(): Promise<ActionResult> {
   const member = await requireMember();
-  if (!member.razorpaySubscriptionId || (member.state !== "active" && member.state !== "lapsed"))
-    return err("no_plan", "You don't have a plan to cancel.");
-  try {
-    await getRazorpay().cancelSubscription(member.razorpaySubscriptionId, true);
-  } catch (e) {
-    if (e instanceof RazorpayError && e.status === 400) {
-      // Already cancelled or never activated on Razorpay's side; fall through and record locally.
-    } else {
-      console.error("cancelSubscription failed", e);
-      return err("payment_provider", "Couldn't reach the payment provider. Please try again.");
-    }
-  }
-  await getDb().insert(events).values({
-    aggregate: "member",
-    aggregateId: member.id,
-    type: "member.cancel_requested",
-    actorId: member.id,
-    payload: {},
-  });
+  if (member.state !== "active")
+    return err("not_active", "Your membership isn't active, so there's nothing to cancel.");
+  await getDb().transaction((tx) => cancelMember(tx, member.id));
   revalidatePath("/profile");
   return ok();
 }
@@ -49,7 +33,7 @@ export async function requestDepositRefund(): Promise<ActionResult<{ amountPaise
   const eligibility = await checkRefundEligibility(db, member.id);
   if (!eligibility.ok) {
     const messages = {
-      not_cancelled: "Cancel your plan first; the deposit is refunded once the paid period ends.",
+      not_cancelled: "Cancel your membership first; then the deposit can be refunded.",
       open_loans: "You have loans still open. The deposit is refunded once they're all returned.",
       open_dispute: "A dispute on one of your loans is still being reviewed.",
       nothing_to_refund: "There's no deposit to refund.",

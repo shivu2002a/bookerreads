@@ -5,7 +5,6 @@ export const clusterStatus = pgEnum("cluster_status", ["waitlist", "open", "paus
 export const memberState = pgEnum("member_state", [
   "registered",
   "active",
-  "lapsed",
   "suspended",
   "cancelled",
 ]);
@@ -60,13 +59,20 @@ export const ledgerKind = pgEnum("ledger_kind", [
   "deposit_refund",
   "deposit_charge",
   "deposit_topup",
-  "pool_credit",
+  "rental_credit",
   "lost_book_credit",
   "payout_out",
   "adjustment",
 ]);
 
-export const paymentStatus = pgEnum("payment_status", ["captured", "failed", "refunded"]);
+/** Lifecycle of one Razorpay order for a loan's rental price. */
+export const loanPaymentStatus = pgEnum("payment_status", [
+  "created",
+  "captured",
+  "refund_pending",
+  "refunded",
+  "failed",
+]);
 
 export const payoutStatus = pgEnum("payout_status", ["pending", "exported", "paid", "failed"]);
 
@@ -90,12 +96,6 @@ export const notificationStatus = pgEnum("notification_status", [
   "failed",
 ]);
 
-export const eventAggregate = pgEnum("event_aggregate", [
-  "member",
-  "copy",
-  "loan",
-  "dispute",
-  "pool_run",
-]);
+export const eventAggregate = pgEnum("event_aggregate", ["member", "copy", "loan", "dispute"]);
 
 export const cronJob = pgEnum("cron_job", ["daily", "monthly"]);

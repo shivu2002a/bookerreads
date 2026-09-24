@@ -104,9 +104,6 @@ export async function overrideLoanState(
         const patch: Partial<typeof loans.$inferInsert> = { state: input.toState };
         if (input.toState === "returned" && !loan.returnedAt) {
           patch.returnedAt = new Date();
-          patch.poolMonth = new Date(
-            Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
-          );
         }
         await tx.update(loans).set(patch).where(eq(loans.id, loan.id));
         const avail = copyAvailabilityFor(input.toState);

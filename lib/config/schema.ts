@@ -21,17 +21,23 @@ export const trustWeightsSchema = z.object({
 });
 
 export const borrowGateSchema = z.object({
-  /** Copies with photos in available or on_loan. */
+  /** Copies with photos in available or on_loan (Requirement 4.4). */
   min_listed_copies: z.number().int().min(0),
-  /** Requires (>=1 verified copy) OR (>=1 completed loan as lender). */
-  require_verified_or_lend: z.boolean(),
   /** Below this trust score borrowing is blocked (Requirement 9.3). */
   min_trust_score: z.number().int().min(0).max(100),
 });
 
 export const configSchemas = {
-  pool_pct: z.number().int().min(0).max(100),
+  /** Share of each rental retained by the platform (Requirement 10.1). */
+  platform_fee_pct: z.number().int().min(0).max(100),
   deposit_paise: z.number().int().min(0),
+  /** Hours a borrower has to pay after the lender accepts (Requirement 5). */
+  payment_window_hours: z.number().int().min(1),
+  /** Open loans (requested/accepted/on_loan/overdue) a borrower may hold at once. */
+  max_open_loans: z.number().int().min(1),
+  /** Rental price bounds a lister may choose (paise). */
+  rental_price_min_paise: z.number().int().min(0),
+  rental_price_max_paise: z.number().int().min(0),
   payout_threshold_paise: z.number().int().min(0),
   trust_weights: trustWeightsSchema,
   borrow_gate: borrowGateSchema,
@@ -51,7 +57,6 @@ export const configSchemas = {
   drop_point_uncollected_alert_days: z.number().int().min(1),
   still_have_it_after_days: z.number().int().min(1),
   still_have_it_unlist_after_days: z.number().int().min(1),
-  subscription_pending_to_lapsed_days: z.number().int().min(1),
   /** Public meet-up spots per cluster slug, suggested at handoff. */
   meetup_spots: z.record(z.string(), z.array(z.string())),
 } as const;
@@ -61,8 +66,12 @@ export type ConfigValue<K extends ConfigKey> = z.infer<(typeof configSchemas)[K]
 export type AppConfig = { [K in ConfigKey]: ConfigValue<K> };
 
 export const CONFIG_DEFAULTS: AppConfig = {
-  pool_pct: 30,
-  deposit_paise: 75000,
+  platform_fee_pct: 15,
+  deposit_paise: 50000,
+  payment_window_hours: 24,
+  max_open_loans: 2,
+  rental_price_min_paise: 0,
+  rental_price_max_paise: 20000,
   payout_threshold_paise: 20000,
   trust_weights: {
     return_on_time: 2,
@@ -76,8 +85,7 @@ export const CONFIG_DEFAULTS: AppConfig = {
     age_bonus_cap_months: 6,
   },
   borrow_gate: {
-    min_listed_copies: 3,
-    require_verified_or_lend: true,
+    min_listed_copies: 1,
     min_trust_score: 30,
   },
   request_timeout_hours: 48,
@@ -96,7 +104,6 @@ export const CONFIG_DEFAULTS: AppConfig = {
   drop_point_uncollected_alert_days: 5,
   still_have_it_after_days: 90,
   still_have_it_unlist_after_days: 14,
-  subscription_pending_to_lapsed_days: 7,
   meetup_spots: {
     "central-east": [
       "Third Wave Coffee, 12th Main Indiranagar",
@@ -108,8 +115,12 @@ export const CONFIG_DEFAULTS: AppConfig = {
 };
 
 export const CONFIG_DESCRIPTIONS: Record<ConfigKey, string> = {
-  pool_pct: "Share of monthly subscription revenue paid to lenders (%)",
+  platform_fee_pct: "Share of each rental price kept by the platform (%)",
   deposit_paise: "Refundable deposit required to borrow (paise)",
+  payment_window_hours: "Hours the borrower has to pay after the lender accepts",
+  max_open_loans: "Open loans a borrower may hold at once",
+  rental_price_min_paise: "Lowest rental price a lister may set (paise)",
+  rental_price_max_paise: "Highest rental price a lister may set (paise)",
   payout_threshold_paise: "Minimum payout balance to be included in a batch (paise)",
   trust_weights: "Trust score delta per event kind and age bonus cap",
   borrow_gate: "Listing and trust requirements before a member can borrow",
@@ -130,8 +141,6 @@ export const CONFIG_DESCRIPTIONS: Record<ConfigKey, string> = {
   still_have_it_after_days: "Days of inactivity before asking a lender if they still have a copy",
   still_have_it_unlist_after_days:
     "Days without a reply to the still-have-it ping before unlisting",
-  subscription_pending_to_lapsed_days:
-    "Days a subscription may be pending before the member lapses",
   meetup_spots: "Suggested public meet-up spots per cluster slug",
 };
 

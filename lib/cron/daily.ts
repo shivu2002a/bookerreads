@@ -5,8 +5,9 @@ import { pruneOtpAttempts } from "@/lib/auth/otp-rate-limit";
 import type { AppConfig } from "@/lib/config/schema";
 import { applyLoanEvent } from "@/lib/loans/persist";
 import type { LoanEvent } from "@/lib/loans/types";
-import { findMembersToLapse, lapseMember } from "@/lib/members/membership";
 import { enqueue, sweepUndelivered, type NotifyDeps } from "@/lib/notify/send";
+import { processPendingRefunds } from "@/lib/payments/rental";
+import type { RazorpayClient } from "@/lib/payments/razorpay";
 import type { Step } from "./runner";
 
 const HOUR = 3_600_000;
@@ -42,7 +43,18 @@ async function applyToEach(
 
 const ids = (rows: Array<{ id: string }>) => rows.map((r) => r.id);
 
-export function dailySteps(db: Db, config: AppConfig, notify: NotifyDeps, now: Date): Step[] {
+export type DailyDeps = {
+  /** Razorpay refunds API; the cron route passes the real client, tests pass a stub. */
+  razorpay?: Pick<RazorpayClient, "createRefund">;
+};
+
+export function dailySteps(
+  db: Db,
+  config: AppConfig,
+  notify: NotifyDeps,
+  now: Date,
+  deps: DailyDeps = {},
+): Step[] {
   const ago = (ms: number) => new Date(now.getTime() - ms);
   const isoDay = now.toISOString().slice(0, 10);
 
@@ -128,6 +140,30 @@ export function dailySteps(db: Db, config: AppConfig, notify: NotifyDeps, now: D
         ),
     },
     {
+      // Requirement 5: accepted but unpaid past the payment window. The machine
+      // distinguishes this from a handoff no-show by `paid_at`.
+      name: "expire_unpaid",
+      run: async () =>
+        applyToEach(
+          db,
+          ids(
+            await db
+              .select({ id: loans.id })
+              .from(loans)
+              .where(
+                and(
+                  eq(loans.state, "accepted"),
+                  isNull(loans.paidAt),
+                  lte(loans.paymentDueAt, now),
+                ),
+              ),
+          ),
+          { type: "timeout" },
+          config,
+          now,
+        ),
+    },
+    {
       name: "expire_handoffs",
       run: async () =>
         applyToEach(
@@ -139,6 +175,7 @@ export function dailySteps(db: Db, config: AppConfig, notify: NotifyDeps, now: D
               .where(
                 and(
                   eq(loans.state, "accepted"),
+                  isNotNull(loans.paidAt),
                   sql`not (${loans.outLenderConfirmedAt} is not null and ${loans.outBorrowerConfirmedAt} is not null)`,
                   lte(
                     sql`coalesce(${loans.respondedAt}, ${loans.requestedAt})`,
@@ -308,13 +345,12 @@ export function dailySteps(db: Db, config: AppConfig, notify: NotifyDeps, now: D
     },
     { name: "sms_fallback_sweep", run: () => sweepUndelivered(db, { ...notify, now: () => now }) },
     {
-      name: "lapse_pending_subscriptions",
+      // Rentals flagged by the machine after a paid handoff expired (Requirement 6.6).
+      name: "process_refunds",
       run: async () => {
-        const toLapse = await findMembersToLapse(db, config, now);
-        let n = 0;
-        for (const id of toLapse)
-          if (await db.transaction((tx) => lapseMember(tx, id, "pending_timeout", now))) n++;
-        return n;
+        if (!deps.razorpay) return 0;
+        const res = await processPendingRefunds(db, deps.razorpay, now);
+        return res.refunded;
       },
     },
     {

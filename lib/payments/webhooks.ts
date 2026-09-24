@@ -1,33 +1,16 @@
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { members, webhookEvents } from "@/db/schema";
+import { loanPayments, webhookEvents } from "@/db/schema";
 import type { AppConfig } from "@/lib/config/schema";
-import {
-  attachSubscription,
-  cancelMember,
-  lapseMember,
-  markSubscriptionPending,
-  recordDepositPayment,
-  recordDepositRefund,
-  recordSubscriptionCharge,
-  recordSubscriptionFailure,
-} from "@/lib/members/membership";
+import { recordDepositPayment, recordDepositRefund } from "@/lib/members/membership";
+import { loanIdForOrder, recordRentalCapture } from "./rental";
 
 /** Razorpay webhook envelope (the parts we read). */
 export type RazorpayWebhook = {
   event: string;
   created_at: number;
   payload: {
-    subscription?: {
-      entity: {
-        id: string;
-        plan_id: string;
-        customer_id?: string;
-        status: string;
-        notes?: Record<string, string>;
-      };
-    };
     payment?: {
       entity: {
         id: string;
@@ -57,13 +40,6 @@ export type WebhookOutcome =
   | { status: "ignored"; event: string; reason: string };
 
 export const HANDLED_EVENTS = [
-  "subscription.authenticated",
-  "subscription.activated",
-  "subscription.charged",
-  "subscription.pending",
-  "subscription.halted",
-  "subscription.cancelled",
-  "subscription.completed",
   "payment.captured",
   "payment.failed",
   "refund.processed",
@@ -72,22 +48,6 @@ export const HANDLED_EVENTS = [
 /** Stable id for dedupe: Razorpay's event id header when present, else a body hash. */
 export function webhookEventId(headerId: string | null, rawBody: string): string {
   return headerId?.trim() || `sha256:${createHash("sha256").update(rawBody).digest("hex")}`;
-}
-
-async function memberIdFromNotes(
-  db: Db,
-  notes: Record<string, string> | undefined,
-  fallbackSubscriptionId?: string,
-): Promise<string | null> {
-  if (notes?.member_id) return notes.member_id;
-  if (fallbackSubscriptionId) {
-    const [m] = await db
-      .select({ id: members.id })
-      .from(members)
-      .where(eq(members.razorpaySubscriptionId, fallbackSubscriptionId));
-    return m?.id ?? null;
-  }
-  return null;
 }
 
 /**
@@ -142,86 +102,30 @@ async function handle(
   now: Date,
 ): Promise<WebhookOutcome> {
   const event = body.event;
-  const sub = body.payload.subscription?.entity;
   const pay = body.payload.payment?.entity;
 
   switch (event) {
-    case "subscription.authenticated":
-    case "subscription.activated": {
-      if (!sub) return { status: "ignored", event, reason: "no subscription entity" };
-      const memberId = await memberIdFromNotes(tx, sub.notes, sub.id);
-      if (!memberId) return { status: "ignored", event, reason: "no member" };
-      await attachSubscription(
-        tx,
-        {
-          memberId,
-          razorpaySubscriptionId: sub.id,
-          razorpayPlanId: sub.plan_id,
-          customerId: sub.customer_id ?? null,
-        },
-        config,
-        now,
-      );
-      return { status: "processed", event, memberId };
-    }
-    case "subscription.charged": {
-      if (!sub || !pay) return { status: "ignored", event, reason: "missing entity" };
-      const memberId = await memberIdFromNotes(tx, sub.notes, sub.id);
-      if (!memberId) return { status: "ignored", event, reason: "no member" };
-      await recordSubscriptionCharge(
-        tx,
-        {
-          memberId,
-          razorpayPaymentId: pay.id,
-          razorpaySubscriptionId: sub.id,
-          amountPaise: pay.amount,
-          paidAt: new Date(pay.created_at * 1000),
-        },
-        config,
-        now,
-      );
-      return { status: "processed", event, memberId };
-    }
-    case "subscription.pending": {
-      if (!sub) return { status: "ignored", event, reason: "no subscription entity" };
-      const memberId = await memberIdFromNotes(tx, sub.notes, sub.id);
-      if (!memberId) return { status: "ignored", event, reason: "no member" };
-      await markSubscriptionPending(tx, memberId, now);
-      if (pay)
-        await recordSubscriptionFailure(
-          tx,
-          {
-            memberId,
-            razorpayPaymentId: pay.id,
-            razorpaySubscriptionId: sub.id,
-            amountPaise: pay.amount,
-            at: new Date(pay.created_at * 1000),
-          },
-          now,
-        );
-      return { status: "processed", event, memberId };
-    }
-    case "subscription.halted": {
-      if (!sub) return { status: "ignored", event, reason: "no subscription entity" };
-      const memberId = await memberIdFromNotes(tx, sub.notes, sub.id);
-      if (!memberId) return { status: "ignored", event, reason: "no member" };
-      await lapseMember(tx, memberId, "halted", now);
-      return { status: "processed", event, memberId };
-    }
-    case "subscription.cancelled":
-    case "subscription.completed": {
-      if (!sub) return { status: "ignored", event, reason: "no subscription entity" };
-      const memberId = await memberIdFromNotes(tx, sub.notes, sub.id);
-      if (!memberId) return { status: "ignored", event, reason: "no member" };
-      await cancelMember(tx, memberId, now);
-      return { status: "processed", event, memberId };
-    }
     case "payment.captured": {
       if (!pay) return { status: "ignored", event, reason: "no payment entity" };
-      const purpose = pay.notes?.purpose ?? body.payload.order?.entity.notes?.purpose;
+      const notes = { ...body.payload.order?.entity.notes, ...pay.notes };
+      const purpose = notes.purpose;
+      const memberId = notes.member_id ?? null;
+      if (purpose === "rental") {
+        // Route by our own order row first; the note is a fallback for orders created elsewhere.
+        const loanId =
+          (pay.order_id ? await loanIdForOrder(tx, pay.order_id) : null) ?? notes.loan_id ?? null;
+        if (!loanId) return { status: "ignored", event, reason: "rental without loan" };
+        const res = await recordRentalCapture(
+          tx,
+          { loanId, razorpayPaymentId: pay.id, amountPaise: pay.amount },
+          config,
+          now,
+        );
+        if (!res.ok) return { status: "ignored", event, reason: res.error.code };
+        return { status: "processed", event, memberId };
+      }
       if (purpose !== "deposit" && purpose !== "topup")
         return { status: "ignored", event, reason: "not a deposit payment" };
-      const memberId = pay.notes?.member_id ?? body.payload.order?.entity.notes?.member_id ?? null;
       if (!memberId) return { status: "ignored", event, reason: "no member" };
       await recordDepositPayment(
         tx,
@@ -236,6 +140,14 @@ async function handle(
     case "refund.processed": {
       const refund = body.payload.refund?.entity;
       if (!refund) return { status: "ignored", event, reason: "no refund entity" };
+      if (refund.notes?.purpose === "rental_refund") {
+        // The cron already marked the row when it created the refund; this confirms settlement.
+        await tx
+          .update(loanPayments)
+          .set({ status: "refunded", razorpayRefundId: refund.id, refundedAt: now, updatedAt: now })
+          .where(eq(loanPayments.razorpayPaymentId, refund.payment_id));
+        return { status: "processed", event, memberId: refund.notes.member_id ?? null };
+      }
       if (refund.notes?.purpose !== "deposit_refund" || !refund.notes.member_id)
         return { status: "ignored", event, reason: "not a deposit refund" };
       await recordDepositRefund(
