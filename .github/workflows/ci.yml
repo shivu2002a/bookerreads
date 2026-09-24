@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Emitted by the Vercel GitHub integration when a preview deploy finishes.
+  deployment_status:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Build-time env. Values are placeholders; nothing here talks to a real service.
+  NEXT_PUBLIC_APP_URL: http://localhost:3000
+  NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-anon-key
+  SUPABASE_SERVICE_ROLE_KEY: ci-service-key
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+  CRON_SECRET: ci-cron-secret-0123456789abcdef
+  RAZORPAY_KEY_ID: rzp_test_ci
+  RAZORPAY_KEY_SECRET: ci
+  RAZORPAY_WEBHOOK_SECRET: ci
+  INTERAKT_API_KEY: ci
+  INTERAKT_WEBHOOK_SECRET: ci
+  MSG91_AUTH_KEY: ci
+  MSG91_SENDER_ID: BKRRDS
+  NOTIFY_MODE: mock
+  SENTRY_SUPPRESS_GLOBAL_ERROR_HANDLER_FILE_WARNING: "1"
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'deployment_status'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm format:check
+      # Unit and integration tests run against PGlite (real Postgres in WASM), no Docker needed.
+      - run: pnpm test
+      - run: pnpm build
+      - name: Bundle size budget (150 KB gzipped for member routes)
+        run: pnpm tsx scripts/check-bundle-size.ts --report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: next-build-manifests
+          path: |
+            .next/app-build-manifest.json
+            .next/build-manifest.json
+          retention-days: 7
+
+  e2e:
+    name: Playwright (mobile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: verify
+    if: github.event_name != 'deployment_status'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm build
+      - run: pnpm test:e2e
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+  lighthouse:
+    name: Lighthouse budget on preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Vercel posts a deployment_status when the preview is ready.
+    if: github.event_name == 'deployment_status' && github.event.deployment_status.state == 'success'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run Lighthouse CI against the preview URL
+        run: npx --yes @lhci/cli@0.14.x autorun
+        env:
+          LHCI_URL: ${{ github.event.deployment_status.environment_url }}
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}

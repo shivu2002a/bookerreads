@@ -1,0 +1,72 @@
+# Supabase local development config. Omitted sections use CLI defaults.
+# Hosted project must mirror the [auth] settings below.
+project_id = "bookerreads"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 200
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[storage]
+enabled = true
+file_size_limit = "5MiB"
+
+[storage.buckets.listing-photos]
+public = true
+file_size_limit = "3MiB"
+allowed_mime_types = ["image/jpeg"]
+
+[storage.buckets.loan-photos]
+public = false
+file_size_limit = "3MiB"
+allowed_mime_types = ["image/jpeg"]
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/**"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = false
+
+[auth.sms]
+enable_signup = true
+enable_confirmations = true
+# OTP valid for 10 minutes (Requirement 1.1)
+max_frequency = "10s"
+otp_length = 6
+otp_expiry = 600
+template = "Your BookerReads code is {{ .Code }}. Valid for 10 minutes."
+
+# Local dev: a fixed test OTP so the flow works without an SMS provider.
+[auth.sms.test_otp]
+919999900001 = "123456"
+919999900002 = "123456"
+919999900003 = "123456"
+
+# Production/staging use MSG91 through a custom SMS hook (Phase 2, task 3.1).
+# Hosted config: Auth > Providers > Phone > Twilio-compatible or Send SMS hook.
+
+[auth.rate_limit]
+# Requirement 15.5: 3 OTP sends per phone per 10 minutes is enforced per
+# number by the application counter; this is the global per-hour ceiling.
+sms_sent = 30
+token_verifications = 30
+
+[analytics]
+enabled = false

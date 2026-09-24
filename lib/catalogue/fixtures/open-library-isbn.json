@@ -1,0 +1,28 @@
+{
+  "publishers": ["Harper"],
+  "classifications": {},
+  "title": "Sapiens: A Brief History of Humankind",
+  "identifiers": {},
+  "covers": [8594920],
+  "isbn_10": ["0062316095"],
+  "publish_date": "2015",
+  "key": "/books/OL27000666M",
+  "works": [
+    {
+      "key": "/works/OL17075811W"
+    }
+  ],
+  "type": {
+    "key": "/type/edition"
+  },
+  "latest_revision": 5,
+  "revision": 5,
+  "created": {
+    "type": "/type/datetime",
+    "value": "2019-06-07T18:07:27.965098"
+  },
+  "last_modified": {
+    "type": "/type/datetime",
+    "value": "2021-05-31T07:21:49.820110"
+  }
+}
