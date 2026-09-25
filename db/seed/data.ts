@@ -22,12 +22,6 @@ export const CLUSTERS = [
   },
 ];
 
-export const PLANS = [
-  { code: "reader", name: "Reader", pricePaise: 14900, concurrentLimit: 1, loanPeriodDays: 21 },
-  { code: "regular", name: "Regular", pricePaise: 24900, concurrentLimit: 2, loanPeriodDays: 21 },
-  { code: "heavy", name: "Heavy", pricePaise: 39900, concurrentLimit: 3, loanPeriodDays: 28 },
-];
-
 const CAFE_HOURS: DropPointHours = {
   mon: { open: "08:00", close: "22:00" },
   tue: { open: "08:00", close: "22:00" },
@@ -69,8 +63,7 @@ export const DROP_POINTS = [
 export const MEMBERS: Array<{
   displayName: string;
   phone: string; // E.164 without +
-  state: "registered" | "active" | "lapsed" | "suspended" | "cancelled";
-  planCode?: "reader" | "regular" | "heavy";
+  state: "registered" | "active" | "suspended" | "cancelled";
   ageDays: number;
   isAdmin?: boolean;
   upiId?: string;
@@ -79,7 +72,6 @@ export const MEMBERS: Array<{
     displayName: "Ananya",
     phone: "919999900001",
     state: "active",
-    planCode: "regular",
     ageDays: 180,
     isAdmin: true,
     upiId: "ananya@okaxis",
@@ -88,7 +80,6 @@ export const MEMBERS: Array<{
     displayName: "Rohan",
     phone: "919999900002",
     state: "active",
-    planCode: "heavy",
     ageDays: 160,
     upiId: "rohan@ybl",
   },
@@ -96,7 +87,6 @@ export const MEMBERS: Array<{
     displayName: "Meera",
     phone: "919999900003",
     state: "active",
-    planCode: "reader",
     ageDays: 150,
     upiId: "meera@okicici",
   },
@@ -104,7 +94,6 @@ export const MEMBERS: Array<{
     displayName: "Karthik",
     phone: "919999900004",
     state: "active",
-    planCode: "regular",
     ageDays: 140,
     upiId: "karthik@paytm",
   },
@@ -112,14 +101,12 @@ export const MEMBERS: Array<{
     displayName: "Divya",
     phone: "919999900005",
     state: "active",
-    planCode: "regular",
     ageDays: 130,
   },
   {
     displayName: "Arjun",
     phone: "919999900006",
     state: "active",
-    planCode: "heavy",
     ageDays: 120,
     upiId: "arjun@okaxis",
   },
@@ -127,23 +114,20 @@ export const MEMBERS: Array<{
     displayName: "Sneha",
     phone: "919999900007",
     state: "active",
-    planCode: "reader",
     ageDays: 110,
   },
   {
     displayName: "Vikram",
     phone: "919999900008",
     state: "active",
-    planCode: "regular",
     ageDays: 100,
     upiId: "vikram@ybl",
   },
-  { displayName: "Priya", phone: "919999900009", state: "active", planCode: "reader", ageDays: 95 },
+  { displayName: "Priya", phone: "919999900009", state: "active", ageDays: 95 },
   {
     displayName: "Aditya",
     phone: "919999900010",
     state: "active",
-    planCode: "regular",
     ageDays: 90,
     upiId: "aditya@okhdfcbank",
   },
@@ -151,51 +135,44 @@ export const MEMBERS: Array<{
     displayName: "Nandini",
     phone: "919999900011",
     state: "active",
-    planCode: "heavy",
     ageDays: 85,
   },
   {
     displayName: "Siddharth",
     phone: "919999900012",
     state: "active",
-    planCode: "reader",
     ageDays: 80,
   },
   {
     displayName: "Kavya",
     phone: "919999900013",
     state: "active",
-    planCode: "regular",
     ageDays: 75,
     upiId: "kavya@okaxis",
   },
-  { displayName: "Rahul", phone: "919999900014", state: "active", planCode: "reader", ageDays: 70 },
+  { displayName: "Rahul", phone: "919999900014", state: "active", ageDays: 70 },
   {
     displayName: "Ishita",
     phone: "919999900015",
     state: "active",
-    planCode: "regular",
     ageDays: 65,
   },
   {
     displayName: "Manish",
     phone: "919999900016",
-    state: "lapsed",
-    planCode: "reader",
+    state: "registered",
     ageDays: 120,
   },
   {
     displayName: "Pooja",
     phone: "919999900017",
-    state: "lapsed",
-    planCode: "regular",
+    state: "registered",
     ageDays: 100,
   },
   {
     displayName: "Nikhil",
     phone: "919999900018",
     state: "suspended",
-    planCode: "regular",
     ageDays: 130,
   },
   { displayName: "Shreya", phone: "919999900019", state: "cancelled", ageDays: 200 },

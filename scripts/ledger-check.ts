@@ -52,11 +52,12 @@ async function main() {
     }),
     { deposit: 0, payout: 0 },
   );
-  const [rev] = (await db.execute<{ revenue: number }>(
-    sql`select coalesce(sum(amount_paise),0)::int as revenue from subscription_payments where status = 'captured'`,
-  )) as unknown as Array<{ revenue: number }>;
+  const [rev] = (await db.execute<{ rentals: number; fees: number }>(
+    sql`select coalesce(sum(rental_paise),0)::int as rentals, coalesce(sum(platform_fee_paise),0)::int as fees
+        from loans where paid_at is not null and handed_off_at is not null`,
+  )) as unknown as Array<{ rentals: number; fees: number }>;
   const [pool] = (await db.execute<{ credited: number; paid: number }>(sql`
-    select coalesce(sum(case when kind = 'pool_credit' then amount_paise end),0)::int as credited,
+    select coalesce(sum(case when kind = 'rental_credit' then amount_paise end),0)::int as credited,
            coalesce(-sum(case when kind = 'payout_out' then amount_paise end),0)::int as paid
     from ledger_entries`)) as unknown as Array<{ credited: number; paid: number }>;
 
@@ -64,10 +65,18 @@ async function main() {
   console.log(`Members: ${rows.length}`);
   console.log(`Deposit liability (held, owed back to members): ${inr(totals.deposit)}`);
   console.log(`Payout liability (earned, not yet paid):        ${inr(totals.payout)}`);
-  console.log(`Subscription revenue captured (all time):       ${inr(Number(rev.revenue))}`);
+  console.log(`Rentals collected on loans that went out:       ${inr(Number(rev.rentals))}`);
+  console.log(`Platform fees retained:                         ${inr(Number(rev.fees))}`);
   console.log(
-    `Pool credited / paid out:                        ${inr(Number(pool.credited))} / ${inr(Number(pool.paid))}`,
+    `Rental credited / paid out:                      ${inr(Number(pool.credited))} / ${inr(Number(pool.paid))}`,
   );
+  const expectedCredit = Number(rev.rentals) - Number(rev.fees);
+  if (expectedCredit !== Number(pool.credited)) {
+    console.error(
+      `\nRental credits (${inr(Number(pool.credited))}) do not equal rentals minus fees (${inr(expectedCredit)}).`,
+    );
+    process.exitCode = 1;
+  }
 
   if (negatives.length) {
     console.error(`\n${negatives.length} member(s) with a negative ledger balance:`);

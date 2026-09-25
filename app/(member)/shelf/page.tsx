@@ -52,8 +52,8 @@ export default async function ShelfPage() {
         <div className="rounded-lg border p-6 text-center">
           <p className="font-medium">Nothing here yet</p>
           <p className="text-muted-foreground mt-1 text-sm">
-            Scan the barcode on any book you own to list it. Listing is free, and you earn from the
-            pool every time it goes out.
+            Scan the barcode on any book you own to list it. Listing is free, you set the price, and
+            you earn it every time the book goes out.
           </p>
           <Button className="mt-4" render={<Link href="/shelf/add" />}>
             Scan your first book

@@ -178,6 +178,8 @@ export function AddCopyWizard({
         <DetailsForm
           book={step.book}
           sticky={sticky}
+          rentalBounds={rentalBounds}
+          platformFeePct={platformFeePct}
           onSaved={(details) => {
             setSticky(details);
             setAdded((n) => n + 1);
@@ -220,11 +222,15 @@ function BookCard({ book }: { book: Book }) {
 function DetailsForm({
   book,
   sticky,
+  rentalBounds,
+  platformFeePct,
   onSaved,
   onBack,
 }: {
   book: Book;
   sticky: StickyDetails;
+  rentalBounds: { min: number; max: number };
+  platformFeePct: number;
   onSaved: (details: StickyDetails) => void;
   onBack: () => void;
 }) {

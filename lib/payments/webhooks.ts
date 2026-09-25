@@ -39,11 +39,7 @@ export type WebhookOutcome =
   | { status: "duplicate"; event: string }
   | { status: "ignored"; event: string; reason: string };
 
-export const HANDLED_EVENTS = [
-  "payment.captured",
-  "payment.failed",
-  "refund.processed",
-] as const;
+export const HANDLED_EVENTS = ["payment.captured", "payment.failed", "refund.processed"] as const;
 
 /** Stable id for dedupe: Razorpay's event id header when present, else a body hash. */
 export function webhookEventId(headerId: string | null, rawBody: string): string {

@@ -63,8 +63,8 @@ describe("decideRequestGate", () => {
     expect(decideRequestGate({ ...active, state: "registered" }, copy, FLOOR)).toMatchObject({
       reason: "needs_activation",
     });
-    expect(decideRequestGate({ ...active, state: "lapsed" }, copy, FLOOR)).toMatchObject({
-      reason: "lapsed",
+    expect(decideRequestGate({ ...active, state: "cancelled" }, copy, FLOOR)).toMatchObject({
+      reason: "needs_activation",
     });
     expect(decideRequestGate({ ...active, state: "suspended" }, copy, FLOOR)).toMatchObject({
       reason: "suspended",

@@ -31,10 +31,10 @@ export async function GET(request: Request) {
     {
       now,
       force,
-    onError: (step, err) => {
-      console.error(`cron daily step ${step} failed`, err);
-      Sentry.captureException(err, { tags: { cron: "daily", step } });
-    },
+      onError: (step, err) => {
+        console.error(`cron daily step ${step} failed`, err);
+        Sentry.captureException(err, { tags: { cron: "daily", step } });
+      },
     },
   );
   await flushNotifications();

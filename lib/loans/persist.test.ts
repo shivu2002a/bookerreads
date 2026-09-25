@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   books,
@@ -8,14 +8,15 @@ import {
   dropPoints,
   events,
   ledgerEntries,
+  loanPayments,
   loanPhotos,
   members,
   notifications,
-  plans,
   trustEvents,
 } from "@/db/schema";
 import { CONFIG_DEFAULTS } from "@/lib/config/schema";
 import { createTestDb, type TestDb } from "@/test/db";
+import { recordRentalCapture } from "@/lib/payments/rental";
 import { applyLoanEvent, createLoanRequest } from "./persist";
 import type { Actor } from "./types";
 
@@ -26,7 +27,6 @@ const D = 24 * H;
 let db: TestDb;
 let close: () => Promise<void>;
 let clusterId: string;
-let planId: string;
 let lender: string;
 let borrower: string;
 let borrower2: string;
@@ -53,8 +53,7 @@ async function activeMember(
       displayName: name,
       clusterId,
       state: "active",
-      planId,
-      depositBalancePaise: 75000,
+      depositBalancePaise: 50000,
       trustScore: 60,
       firstBorrowCompletedAt: new Date("2026-01-01"),
       createdAt: new Date("2026-01-01"),
@@ -63,7 +62,7 @@ async function activeMember(
     .returning();
   await db
     .insert(ledgerEntries)
-    .values({ memberId: m.id, account: "deposit", kind: "deposit_in", amountPaise: 75000 });
+    .values({ memberId: m.id, account: "deposit", kind: "deposit_in", amountPaise: 50000 });
   // Borrow gate: three listed copies, one verified.
   for (let i = 0; i < 3; i++) {
     await db.insert(copies).values({
@@ -103,16 +102,6 @@ beforeAll(async () => {
     .insert(clusters)
     .values({ slug: "ce", name: "CE", pincodes: [], status: "open" })
     .returning({ id: clusters.id });
-  [{ id: planId }] = await db
-    .insert(plans)
-    .values({
-      code: "regular",
-      name: "Regular",
-      pricePaise: 24900,
-      concurrentLimit: 2,
-      loanPeriodDays: 21,
-    })
-    .returning({ id: plans.id });
   [{ id: bookId }] = await db
     .insert(books)
     .values({
@@ -321,7 +310,6 @@ describe("full lifecycle", () => {
       at(t2),
     );
     expect(r2.ok && r2.loan.state).toBe("returned");
-    expect(r2.ok && r2.loan.poolMonth).toEqual(new Date("2026-10-01"));
 
     [c] = await db.select().from(copies).where(eq(copies.id, copy.id));
     expect(c.availability).toBe("available");
@@ -423,7 +411,7 @@ describe("full lifecycle", () => {
 describe("lost book", () => {
   it("charges the deposit, credits the lender, suspends the borrower, and flags top-up", async () => {
     const victim = await activeMember("Victim", "v");
-    const copy = await newCopy(lender, { replacementValuePaise: 60000 });
+    const copy = await newCopy(lender, { replacementValuePaise: 40000 });
     const req = await createLoanRequest(
       db,
       { copyId: copy.id, borrowerId: victim, handoffMethod: "meetup" },
@@ -493,19 +481,19 @@ describe("lost book", () => {
     expect(lost.ok && lost.loan.state).toBe("lost");
 
     const [v] = await db.select().from(members).where(eq(members.id, victim));
-    // Deposit was 75000; replacement 60000 -> 15000 left, below the required 75000.
-    expect(v.depositBalancePaise).toBe(15000);
+    // Deposit was 50000; replacement 40000 -> 10000 left, below the required 50000.
+    expect(v.depositBalancePaise).toBe(10000);
     expect(v.needsTopup).toBe(true);
     expect(v.state).toBe("suspended");
     expect(v.suspendedUntil).toEqual(new Date(due.getTime() + 15 * D + 90 * D));
     const [l] = await db.select().from(members).where(eq(members.id, lender));
-    expect(l.payoutBalancePaise).toBe(60000);
+    expect(l.payoutBalancePaise).toBe(40000);
     const [c] = await db.select().from(copies).where(eq(copies.id, copy.id));
     expect(c.availability).toBe("lost");
     const entries = await db.select().from(ledgerEntries).where(eq(ledgerEntries.loanId, id));
     expect(entries.map((e) => `${e.kind}:${e.amountPaise}`).sort()).toEqual([
-      "deposit_charge:-60000",
-      "lost_book_credit:60000",
+      "deposit_charge:-40000",
+      "lost_book_credit:40000",
     ]);
   });
 
@@ -517,7 +505,7 @@ describe("lost book", () => {
       .where(eq(ledgerEntries.memberId, poor));
     const copy = await newCopy(lender, { replacementValuePaise: 50000 });
     // Deposit 20000 < required: activation fails. Grant the deposit level for the request, then lower it.
-    await db.update(members).set({ depositBalancePaise: 75000 }).where(eq(members.id, poor));
+    await db.update(members).set({ depositBalancePaise: 50000 }).where(eq(members.id, poor));
     const req = await createLoanRequest(
       db,
       { copyId: copy.id, borrowerId: poor, handoffMethod: "meetup" },
@@ -687,7 +675,142 @@ describe("dispute", () => {
       resolvedBy: admin,
     });
     const [b2] = await db.select().from(members).where(eq(members.id, borrower2));
-    expect(b2.depositBalancePaise).toBe(65000);
+    expect(b2.depositBalancePaise).toBe(40000);
     expect(b2.needsTopup).toBe(true);
+  });
+});
+
+describe("priced loan through the persistence layer", () => {
+  it("accept opens the window, pay unlocks handoff, handoff credits the lender", async () => {
+    const payer = await activeMember("Payer", "pay1");
+    const copy = await newCopy(lender, { rentalPricePaise: 5000, loanPeriodDays: 14 });
+    const req = await createLoanRequest(
+      db,
+      { copyId: copy.id, borrowerId: payer, handoffMethod: "meetup" },
+      member(payer),
+      config,
+      at(NOW),
+    );
+    if (!req.ok) throw new Error(req.error.message);
+    expect(req.loan).toMatchObject({ rentalPaise: 5000, platformFeePaise: 750, paidAt: null });
+    const id = req.loan.id;
+
+    const acc = await applyLoanEvent(
+      db,
+      id,
+      { type: "accept", inHandConfirmed: true },
+      member(lender),
+      config,
+      at(NOW),
+    );
+    expect(acc.ok && acc.loan.paymentDueAt).toEqual(new Date(NOW.getTime() + 24 * H));
+    expect(acc.ok && acc.loan.paidAt).toBeNull();
+
+    const blocked = await applyLoanEvent(
+      db,
+      id,
+      { type: "confirm_out", photoPath: "loans/out-l.jpg" },
+      member(lender),
+      config,
+      at(NOW),
+    );
+    expect(!blocked.ok && blocked.error.code).toBe("payment_required");
+
+    // The order row is what the webhook or checkout callback would have created.
+    await db.insert(loanPayments).values({
+      loanId: id,
+      borrowerId: payer,
+      razorpayOrderId: `order_${id.slice(0, 8)}`,
+      amountPaise: 5000,
+    });
+    const paid = await recordRentalCapture(
+      db,
+      { loanId: id, razorpayPaymentId: `pay_${id.slice(0, 8)}`, amountPaise: 5000 },
+      config,
+      new Date(NOW.getTime() + 2 * H),
+    );
+    expect(paid).toEqual({ ok: true, duplicate: false });
+    expect(
+      await recordRentalCapture(
+        db,
+        { loanId: id, razorpayPaymentId: `pay_${id.slice(0, 8)}`, amountPaise: 5000 },
+        config,
+        new Date(NOW.getTime() + 2 * H),
+      ),
+    ).toEqual({ ok: true, duplicate: true });
+    const [lp] = await db.select().from(loanPayments).where(eq(loanPayments.loanId, id));
+    expect(lp.status).toBe("captured");
+
+    const t = new Date(NOW.getTime() + 1 * D);
+    await applyLoanEvent(
+      db,
+      id,
+      { type: "confirm_out", photoPath: "loans/out-l.jpg" },
+      member(lender),
+      config,
+      at(t),
+    );
+    const out = await applyLoanEvent(
+      db,
+      id,
+      { type: "confirm_out", photoPath: "loans/out-b.jpg" },
+      member(payer),
+      config,
+      at(t),
+    );
+    expect(out.ok && out.loan.state).toBe("on_loan");
+    expect(out.ok && out.loan.dueAt).toEqual(new Date(t.getTime() + 14 * D));
+    const [l] = await db.select().from(members).where(eq(members.id, lender));
+    const credits = await db
+      .select()
+      .from(ledgerEntries)
+      .where(and(eq(ledgerEntries.loanId, id), eq(ledgerEntries.kind, "rental_credit")));
+    expect(credits).toEqual([expect.objectContaining({ memberId: lender, amountPaise: 4250 })]);
+    expect(l.payoutBalancePaise).toBeGreaterThanOrEqual(4250);
+  });
+
+  it("a paid handoff that never happens flags the payment for refund", async () => {
+    const payer = await activeMember("Payer2", "pay2");
+    const copy = await newCopy(lender, { rentalPricePaise: 3000 });
+    const req = await createLoanRequest(
+      db,
+      { copyId: copy.id, borrowerId: payer, handoffMethod: "meetup" },
+      member(payer),
+      config,
+      at(NOW),
+    );
+    if (!req.ok) throw new Error(req.error.message);
+    const id = req.loan.id;
+    await applyLoanEvent(
+      db,
+      id,
+      { type: "accept", inHandConfirmed: true },
+      member(lender),
+      config,
+      at(NOW),
+    );
+    await db.insert(loanPayments).values({
+      loanId: id,
+      borrowerId: payer,
+      razorpayOrderId: `order_${id.slice(0, 8)}`,
+      amountPaise: 3000,
+    });
+    await recordRentalCapture(
+      db,
+      { loanId: id, razorpayPaymentId: `pay_${id.slice(0, 8)}`, amountPaise: 3000 },
+      config,
+      NOW,
+    );
+    const expired = await applyLoanEvent(
+      db,
+      id,
+      { type: "timeout" },
+      system,
+      config,
+      at(new Date(NOW.getTime() + 6 * D)),
+    );
+    expect(expired.ok && expired.loan.state).toBe("expired");
+    const [lp] = await db.select().from(loanPayments).where(eq(loanPayments.loanId, id));
+    expect(lp.status).toBe("refund_pending");
   });
 });

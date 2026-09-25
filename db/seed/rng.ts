@@ -31,6 +31,7 @@ export const daysAgo = (days: number, now = new Date()) =>
 export const hoursAgo = (hours: number, now = new Date()) =>
   new Date(now.getTime() - hours * 60 * 60 * 1000);
 export const daysFromNow = (days: number, now = new Date()) => daysAgo(-days, now);
+export const hoursFromNow = (hours: number, now = new Date()) => hoursAgo(-hours, now);
 export const startOfMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 export const previousMonth = (d: Date) =>
   new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1));

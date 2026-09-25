@@ -24,11 +24,7 @@ export type RentalOrder = {
 };
 
 export type RentalOrderError =
-  | "loan_not_found"
-  | "not_borrower"
-  | "not_payable"
-  | "already_paid"
-  | "window_closed";
+  "loan_not_found" | "not_borrower" | "not_payable" | "already_paid" | "window_closed";
 
 export async function createRentalOrder(
   db: Db,
@@ -50,7 +46,8 @@ export async function createRentalOrder(
   if (!loan) return { ok: false, error: "loan_not_found" };
   if (loan.borrowerId !== input.memberId) return { ok: false, error: "not_borrower" };
   if (loan.paidAt) return { ok: false, error: "already_paid" };
-  if (loan.state !== "accepted" || loan.rentalPaise <= 0) return { ok: false, error: "not_payable" };
+  if (loan.state !== "accepted" || loan.rentalPaise <= 0)
+    return { ok: false, error: "not_payable" };
   if (loan.paymentDueAt && loan.paymentDueAt <= now) return { ok: false, error: "window_closed" };
 
   // Reuse an open order: Razorpay orders stay payable, and a second order would
@@ -60,7 +57,10 @@ export async function createRentalOrder(
     .from(loanPayments)
     .where(and(eq(loanPayments.loanId, loan.id), eq(loanPayments.status, "created")));
   if (open && open.amountPaise === loan.rentalPaise) {
-    return { ok: true, order: { orderId: open.orderId, amountPaise: open.amountPaise, loanId: loan.id } };
+    return {
+      ok: true,
+      order: { orderId: open.orderId, amountPaise: open.amountPaise, loanId: loan.id },
+    };
   }
 
   const order = await razorpay.createOrder({

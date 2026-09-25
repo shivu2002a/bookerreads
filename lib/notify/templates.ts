@@ -65,6 +65,30 @@ export const TEMPLATES = {
     sms: (v) =>
       `BookerReads: no reply on "${s(v, "book")}" in 48h, so the request expired. Try another copy: ${link(v)}`,
   },
+  payment_due: {
+    whatsapp: "br_payment_due",
+    params: (v) => [s(v, "lender"), s(v, "book"), money(v, "amountPaise"), link(v)],
+    sms: (v) =>
+      `BookerReads: ${s(v, "lender")} accepted your request for "${s(v, "book")}". Pay ${money(v, "amountPaise")} within 24h to confirm: ${link(v)}`,
+  },
+  payment_received: {
+    whatsapp: "br_payment_received",
+    params: (v) => [s(v, "borrower"), s(v, "book"), money(v, "amountPaise"), link(v)],
+    sms: (v) =>
+      `BookerReads: ${s(v, "borrower")} paid ${money(v, "amountPaise")} for "${s(v, "book")}". Arrange the handoff: ${link(v)}`,
+  },
+  payment_expired: {
+    whatsapp: "br_payment_expired",
+    params: (v) => [s(v, "book"), link(v)],
+    sms: (v) =>
+      `BookerReads: the payment window for "${s(v, "book")}" passed, so the request expired. ${link(v)}`,
+  },
+  payment_refunded: {
+    whatsapp: "br_payment_refunded",
+    params: (v) => [s(v, "book"), money(v, "amountPaise")],
+    sms: (v) =>
+      `BookerReads: the handoff for "${s(v, "book")}" didn't happen. ${money(v, "amountPaise")} is being refunded to you.`,
+  },
   handoff_confirmed_one_side: {
     whatsapp: "br_handoff_one_side",
     params: (v) => [s(v, "other"), s(v, "book"), link(v)],
@@ -188,23 +212,11 @@ export const TEMPLATES = {
     params: (v) => [link(v)],
     sms: (v) => `BookerReads: you're all set to borrow. Find your next read: ${link(v)}`,
   },
-  payment_retrying: {
-    whatsapp: "br_payment_retrying",
-    params: (v) => [link(v)],
-    sms: (v) =>
-      `BookerReads: your monthly payment didn't go through. We'll retry; update your card if needed: ${link(v)}`,
-  },
-  membership_lapsed: {
-    whatsapp: "br_lapsed",
-    params: (v) => [link(v)],
-    sms: (v) =>
-      `BookerReads: your plan has lapsed, so new requests are paused. Renew to continue: ${link(v)}`,
-  },
   membership_cancelled: {
     whatsapp: "br_cancelled",
     params: (v) => [link(v)],
     sms: (v) =>
-      `BookerReads: your plan is cancelled. Your deposit is refundable once loans are closed: ${link(v)}`,
+      `BookerReads: your membership is cancelled. Your deposit is refundable once loans are closed: ${link(v)}`,
   },
   deposit_refunded: {
     whatsapp: "br_deposit_refunded",
@@ -219,11 +231,11 @@ export const TEMPLATES = {
       `BookerReads: ${s(v, "cluster")} is now open! Set it as your area and start borrowing: ${link(v)}`,
   },
   // money
-  pool_statement: {
-    whatsapp: "br_pool_statement",
-    params: (v) => [s(v, "month"), s(v, "loans"), money(v, "creditPaise"), link(v)],
+  payout_batch_ready: {
+    whatsapp: "br_payout_batch_ready",
+    params: (v) => [s(v, "month"), s(v, "count"), money(v, "totalPaise"), link(v)],
     sms: (v) =>
-      `BookerReads: ${s(v, "loans")} loan(s) completed in ${s(v, "month")} earned you ${money(v, "creditPaise")}. Balance: ${link(v)}`,
+      `BookerReads admin: payout batch ${s(v, "month")} has ${s(v, "count")} payout(s) totalling ${money(v, "totalPaise")}. Export: ${link(v)}`,
   },
   payout_sent: {
     whatsapp: "br_payout_sent",

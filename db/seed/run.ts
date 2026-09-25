@@ -6,8 +6,16 @@ import { rowsOf, type Db } from "@/db/client";
 import { hashPhone } from "@/lib/auth/phone-hash";
 import { CONFIG_DEFAULTS, CONFIG_DESCRIPTIONS, type ConfigKey } from "@/lib/config/schema";
 import * as s from "../schema";
-import { CLUSTERS, DROP_POINTS, MEMBERS, PLANS } from "./data";
-import { createRng, daysAgo, daysFromNow, hoursAgo, previousMonth, startOfMonth } from "./rng";
+import { CLUSTERS, DROP_POINTS, MEMBERS } from "./data";
+import {
+  createRng,
+  daysAgo,
+  daysFromNow,
+  hoursAgo,
+  hoursFromNow,
+  previousMonth,
+  startOfMonth,
+} from "./rng";
 
 type BookFixture = {
   isbn13: string;
@@ -33,14 +41,13 @@ export type SeedOptions = {
 
 export type SeedSummary = {
   clusters: number;
-  plans: number;
   dropPoints: number;
   books: number;
   members: number;
   copies: number;
   loans: Record<string, number>;
   ledgerEntries: number;
-  poolRunMonth: string;
+  loanPayments: number;
 };
 
 const TABLES_IN_DELETE_ORDER = [
@@ -51,8 +58,7 @@ const TABLES_IN_DELETE_ORDER = [
   "trust_events",
   "ledger_entries",
   "payouts",
-  "pool_runs",
-  "subscription_payments",
+  "loan_payments",
   "webhook_events",
   "disputes",
   "loan_messages",
@@ -64,7 +70,6 @@ const TABLES_IN_DELETE_ORDER = [
   "otp_attempts",
   "cluster_waitlist",
   "members",
-  "plans",
   "clusters",
   "config",
 ];
@@ -102,15 +107,9 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
     })),
   );
 
-  // ---- clusters, plans, drop points ------------------------------------
+  // ---- clusters, drop points -------------------------------------------
   const clusters = await db.insert(s.clusters).values(CLUSTERS).returning();
   const central = clusters.find((c) => c.slug === "central-east")!;
-
-  const plans = await db
-    .insert(s.plans)
-    .values(PLANS.map((p) => ({ ...p, razorpayPlanId: `plan_seed_${p.code}` })))
-    .returning();
-  const planByCode = new Map(plans.map((p) => [p.code, p]));
 
   const dropPoints = await db
     .insert(s.dropPoints)
@@ -171,7 +170,8 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
     .insert(s.members)
     .values(
       MEMBERS.map((m) => {
-        const plan = m.planCode ? planByCode.get(m.planCode)! : null;
+        // Active and suspended members have paid the deposit and so have a Razorpay customer.
+        const paidDeposit = m.state === "active" || m.state === "suspended";
         const createdAt = daysAgo(m.ageDays, now);
         return {
           authUserId: opts.authUserIds?.get(m.phone) ?? crypto.randomUUID(),
@@ -179,9 +179,7 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
           displayName: m.displayName,
           clusterId: central.id,
           state: m.state,
-          planId: plan?.id ?? null,
-          razorpayCustomerId: plan ? `cust_seed_${m.phone.slice(-4)}` : null,
-          razorpaySubscriptionId: plan ? `sub_seed_${m.phone.slice(-4)}` : null,
+          razorpayCustomerId: paidDeposit ? `cust_seed_${m.phone.slice(-4)}` : null,
           suspendedUntil: m.state === "suspended" ? daysFromNow(60, now) : null,
           upiId: m.upiId ?? null,
           upiVerified: Boolean(m.upiId),
@@ -243,6 +241,8 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
         bookId: book.id,
         ownerId: owner.id,
         clusterId: central.id,
+        rentalPricePaise: rng.chance(0.2) ? 0 : rng.pick([2000, 3000, 3000, 5000, 5000, 8000]),
+        loanPeriodDays: rng.pick([14, 21, 21, 28]),
         condition: rng.pick(conditions),
         replacementValuePaise: Math.round((listPrice * adj) / 100) * 100,
         listingPhotoPath: `listings/seed/${book.isbn13}-${owner.id.slice(0, 8)}.jpg`,
@@ -265,6 +265,8 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
       clusterId: central.id,
       condition: rng.pick(conditions),
       replacementValuePaise: book.listPricePaise ?? 39900,
+      rentalPricePaise: rng.pick([0, 3000, 5000]),
+      loanPeriodDays: 21,
       listingPhotoPath: `listings/seed/${book.isbn13}-${owner.id.slice(0, 8)}.jpg`,
       allowedHandoffs: ["meetup", "courier"],
       availability: "available",
@@ -298,6 +300,8 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
     state: (typeof s.loanState.enumValues)[number];
     /** `drop_point` loans are legacy data from before the feature was retired. */
     method: "meetup" | "drop_point" | "courier";
+    /** Accepted but not yet paid; the default is paid at acceptance. */
+    unpaid?: boolean;
     ageDays: number; // when requested
     extra?: (l: typeof s.loans.$inferInsert, copy: (typeof copies)[number]) => void;
     copyAvailability: (typeof s.copyAvailability.enumValues)[number];
@@ -335,14 +339,16 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
       },
     },
     { state: "expired", method: "drop_point", ageDays: 7, copyAvailability: "available" },
-    // accepted, awaiting handoff
+    // accepted, borrower still has to pay (Requirement 5)
     {
       state: "accepted",
       method: "meetup",
       ageDays: 1,
       copyAvailability: "requested",
+      unpaid: true,
       extra: (l) => {
         l.respondedAt = hoursAgo(20, now);
+        l.paymentDueAt = hoursFromNow(4, now);
       },
     },
     {
@@ -462,7 +468,6 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
           l.returnLenderConfirmedAt = returnedAt;
           l.returnedAt = returnedAt;
           l.returnCondition = "good";
-          l.poolMonth = startOfMonth(returnedAt);
           if (i % 3 === 0) {
             l.dropPointId = dp1.id;
             l.handoffCode = handoffCode(rng);
@@ -489,7 +494,6 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
         l.returnLenderConfirmedAt = r;
         l.returnedAt = r;
         l.returnCondition = "worn";
-        l.poolMonth = thisMonth;
       },
     },
     // lost (borrower is the suspended member)
@@ -506,7 +510,6 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
         l.outBorrowerConfirmedAt = h;
         l.handedOffAt = h;
         l.dueAt = daysAgo(37, now);
-        l.poolMonth = null;
       },
     },
     // disputed (open)
@@ -527,7 +530,6 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
         l.returnLenderConfirmedAt = r;
         l.returnedAt = r;
         l.returnCondition = "worn";
-        l.poolMonth = thisMonth;
       },
     },
     // resolved (last month, partial charge)
@@ -548,7 +550,6 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
         l.returnLenderConfirmedAt = r;
         l.returnedAt = r;
         l.returnCondition = "worn";
-        l.poolMonth = lastMonth;
         l.dropPointId = dp0.id;
         l.handoffCode = handoffCode(rng);
       },
@@ -578,6 +579,14 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
       createdAt: requestedAt,
     };
     spec.extra?.(row, copy);
+    // Rental snapshot and payment (Requirement 5): anything past `requested` was paid on acceptance.
+    row.rentalPaise = copy.rentalPricePaise;
+    row.platformFeePaise = Math.floor(
+      (copy.rentalPricePaise * CONFIG_DEFAULTS.platform_fee_pct) / 100,
+    );
+    if (spec.state !== "requested" && spec.state !== "declined" && !spec.unpaid) {
+      row.paidAt = row.respondedAt ?? requestedAt;
+    }
     loanRows.push(row);
     copyUpdates.set(copy.id, spec.copyAvailability);
   }
@@ -783,10 +792,7 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
 
   // ---- money ------------------------------------------------------------
   const ledger: (typeof s.ledgerEntries.$inferInsert)[] = [];
-  const payments: (typeof s.subscriptionPayments.$inferInsert)[] = [];
-  const paying = members.filter(
-    (m) => m.planId && (m.state === "active" || m.state === "lapsed" || m.state === "suspended"),
-  );
+  const paying = members.filter((m) => m.state === "active" || m.state === "suspended");
   for (const m of paying) {
     ledger.push({
       memberId: m.id,
@@ -796,42 +802,42 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
       razorpayRef: `pay_seed_dep_${m.phoneHash.slice(0, 8)}`,
       createdAt: m.createdAt,
     });
-    const plan = plans.find((p) => p.id === m.planId)!;
-    // Subscription charges: one last month for everyone paying, one this month for active members.
-    payments.push({
-      memberId: m.id,
-      razorpayPaymentId: `pay_seed_${m.phoneHash.slice(0, 8)}_lm`,
-      razorpaySubscriptionId: m.razorpaySubscriptionId!,
-      amountPaise: plan.pricePaise,
-      status: "captured",
-      paidAt: new Date(lastMonth.getTime() + 2 * 86_400_000),
-      poolMonth: lastMonth,
+  }
+
+  // Rental payments: one captured Razorpay order per paid, priced loan, and the
+  // lender's credit once the book went out (design.md Rental payment).
+  const paymentRows: (typeof s.loanPayments.$inferInsert)[] = [];
+  for (const l of loans) {
+    if (!l.paidAt || l.rentalPaise <= 0) continue;
+    paymentRows.push({
+      loanId: l.id,
+      borrowerId: l.borrowerId,
+      razorpayOrderId: `order_seed_${l.id.slice(0, 8)}`,
+      razorpayPaymentId: `pay_seed_${l.id.slice(0, 8)}`,
+      amountPaise: l.rentalPaise,
+      status: l.state === "expired" ? "refunded" : "captured",
+      paidAt: l.paidAt,
+      refundedAt: l.state === "expired" ? l.paidAt : null,
+      razorpayRefundId: l.state === "expired" ? `rfnd_seed_${l.id.slice(0, 8)}` : null,
+      createdAt: l.paidAt,
+      updatedAt: l.paidAt,
     });
-    if (m.state === "active") {
-      payments.push({
-        memberId: m.id,
-        razorpayPaymentId: `pay_seed_${m.phoneHash.slice(0, 8)}_tm`,
-        razorpaySubscriptionId: m.razorpaySubscriptionId!,
-        amountPaise: plan.pricePaise,
-        status: "captured",
-        paidAt: new Date(Math.min(thisMonth.getTime() + 2 * 86_400_000, now.getTime())),
-        poolMonth: thisMonth,
-      });
-    } else if (m.state === "lapsed") {
-      payments.push({
-        memberId: m.id,
-        razorpayPaymentId: `pay_seed_${m.phoneHash.slice(0, 8)}_f`,
-        razorpaySubscriptionId: m.razorpaySubscriptionId!,
-        amountPaise: plan.pricePaise,
-        status: "failed",
-        paidAt: new Date(thisMonth.getTime() + 2 * 86_400_000),
-        poolMonth: thisMonth,
+    if (l.handedOffAt) {
+      ledger.push({
+        memberId: l.lenderId,
+        account: "payout",
+        kind: "rental_credit",
+        amountPaise: l.rentalPaise - l.platformFeePaise,
+        loanId: l.id,
+        note: "Rental earned",
+        createdAt: l.handedOffAt,
       });
     }
   }
-  await db.insert(s.subscriptionPayments).values(payments);
+  if (paymentRows.length) await db.insert(s.loanPayments).values(paymentRows);
 
-  // Lost book: deposit charge on borrower, credit to lender.
+  // Lost book: deposit charge on borrower (clamped to what is held, as postEntry
+  // would do), full credit to lender; the platform absorbs any gap.
   const lostLoan = loans.find((l) => l.state === "lost")!;
   const lostCopy = copies.find((c) => c.id === lostLoan.copyId)!;
   ledger.push(
@@ -839,7 +845,7 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
       memberId: lostLoan.borrowerId,
       account: "deposit",
       kind: "deposit_charge",
-      amountPaise: -lostCopy.replacementValuePaise,
+      amountPaise: -Math.min(lostCopy.replacementValuePaise, CONFIG_DEFAULTS.deposit_paise),
       loanId: lostLoan.id,
       note: "Book marked lost after 14 days overdue",
       createdAt: daysAgo(23, now),
@@ -896,60 +902,6 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
     },
   );
 
-  // Pool run for last month.
-  const lmRevenue = payments
-    .filter((p) => p.status === "captured" && p.poolMonth.getTime() === lastMonth.getTime())
-    .reduce((a, p) => a + p.amountPaise, 0);
-  const lmLoans = loans.filter(
-    (l) =>
-      l.poolMonth &&
-      l.poolMonth.getTime() === lastMonth.getTime() &&
-      ["returned", "disputed", "resolved"].includes(l.state),
-  );
-  const poolPaise = Math.floor((lmRevenue * CONFIG_DEFAULTS.pool_pct) / 100);
-  const perLoan = lmLoans.length ? Math.floor(poolPaise / lmLoans.length) : 0;
-  const carryOut = poolPaise - perLoan * lmLoans.length;
-  const perLender = new Map<string, number>();
-  for (const l of lmLoans) perLender.set(l.lenderId, (perLender.get(l.lenderId) ?? 0) + 1);
-  const [poolRun] = await db
-    .insert(s.poolRuns)
-    .values({
-      month: lastMonth,
-      revenuePaise: lmRevenue,
-      poolPct: CONFIG_DEFAULTS.pool_pct,
-      poolPaise,
-      carryInPaise: 0,
-      loanCount: lmLoans.length,
-      perLoanPaise: perLoan,
-      carryOutPaise: carryOut,
-      statement: {
-        month: lastMonth.toISOString().slice(0, 10),
-        revenuePaise: lmRevenue,
-        poolPct: CONFIG_DEFAULTS.pool_pct,
-        carryInPaise: 0,
-        poolPaise,
-        loanCount: lmLoans.length,
-        perLoanPaise: perLoan,
-        carryOutPaise: carryOut,
-        lenders: [...perLender].map(([memberId, loanCount]) => ({
-          memberId,
-          loanCount,
-          creditPaise: loanCount * perLoan,
-        })),
-      },
-      createdAt: new Date(thisMonth.getTime() + 3 * 3600_000),
-    })
-    .returning();
-  for (const [memberId, count] of perLender) {
-    ledger.push({
-      memberId,
-      account: "payout",
-      kind: "pool_credit",
-      amountPaise: count * perLoan,
-      poolRunId: poolRun.id,
-      createdAt: poolRun.createdAt,
-    });
-  }
   await db.insert(s.ledgerEntries).values(ledger);
 
   // Cached balances from the ledger.
@@ -959,7 +911,7 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
       payout_balance_paise  = coalesce((select sum(amount_paise) from ledger_entries e where e.member_id = m.id and e.account = 'payout'), 0)
   `);
   await db.execute(
-    sql`update members set needs_topup = true where deposit_balance_paise < ${CONFIG_DEFAULTS.deposit_paise} and state in ('active','lapsed','suspended') and plan_id is not null`,
+    sql`update members set needs_topup = true where deposit_balance_paise < ${CONFIG_DEFAULTS.deposit_paise} and state in ('active','suspended')`,
   );
 
   // Payout batch for last month: balance >= threshold and verified UPI.
@@ -973,13 +925,13 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
     await db.insert(s.payouts).values(
       eligible.map((r, i) => ({
         memberId: r.id,
-        poolRunId: poolRun.id,
+        month: lastMonth,
         amountPaise: Number(r.payout_balance_paise),
         upiId: r.upi_id,
         status: (i === 0 ? "paid" : "exported") as "paid" | "exported",
         batchId,
         razorpayPayoutId: i === 0 ? "pout_seed_1" : null,
-        createdAt: poolRun.createdAt,
+        createdAt: new Date(thisMonth.getTime() + 3 * 3600_000),
       })),
     );
   }
@@ -1021,13 +973,12 @@ export async function seed(db: SeedDb, opts: SeedOptions = {}): Promise<SeedSumm
 
   return {
     clusters: clusters.length,
-    plans: plans.length,
     dropPoints: dropPoints.length,
     books: allBooks.length,
     members: members.length,
     copies: copies.length,
     loans: loanCounts,
     ledgerEntries: ledger.length,
-    poolRunMonth: lastMonth.toISOString().slice(0, 10),
+    loanPayments: paymentRows.length,
   };
 }

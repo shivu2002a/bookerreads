@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-/** Vercel Cron, 1st of the month 03:00 IST. Pool run for last month, then payouts. */
+/** Vercel Cron, 1st of the month 03:00 IST. Payout batch for lenders over the threshold. */
 export async function GET(request: Request) {
   const env = getServerEnv();
   const denied = assertCronSecret(request, env.CRON_SECRET);

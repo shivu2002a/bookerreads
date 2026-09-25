@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { TrustScore } from "@/components/badges";
 import { Button } from "@/components/ui/button";
 import { getDb } from "@/db/client";
-import { clusters, plans } from "@/db/schema";
+import { clusters } from "@/db/schema";
 import { signOut } from "@/app/(auth)/login/actions";
 import { requireOnboardedMember } from "@/lib/auth/current-member";
 import { loadConfig } from "@/lib/config/load";
@@ -17,7 +17,6 @@ export const metadata: Metadata = { title: "Me" };
 const STATE_LABEL: Record<string, string> = {
   registered: "Listing only",
   active: "Active",
-  lapsed: "Lapsed (payment due)",
   suspended: "Suspended",
   cancelled: "Cancelled",
 };
@@ -25,18 +24,12 @@ const STATE_LABEL: Record<string, string> = {
 export default async function ProfilePage() {
   const member = await requireOnboardedMember();
   const db = getDb();
-  const [config, [cluster], [plan], refund] = await Promise.all([
+  const [config, [cluster], refund] = await Promise.all([
     loadConfig(db),
     db
       .select({ name: clusters.name, slug: clusters.slug })
       .from(clusters)
       .where(eq(clusters.id, member.clusterId)),
-    member.planId
-      ? db
-          .select({ name: plans.name, pricePaise: plans.pricePaise })
-          .from(plans)
-          .where(eq(plans.id, member.planId))
-      : Promise.resolve([undefined]),
     checkRefundEligibility(db, member.id),
   ]);
 
@@ -59,7 +52,9 @@ export default async function ProfilePage() {
         <Stat
           label="Membership"
           value={STATE_LABEL[member.state]}
-          sub={plan ? `${plan.name} · ${formatPaise(plan.pricePaise)}/month` : "No plan"}
+          sub={
+            member.state === "active" ? "Pay per book, no subscription" : "Lending is always free"
+          }
         />
         <Stat
           label="Deposit held"
@@ -90,10 +85,7 @@ export default async function ProfilePage() {
 
       <ProfileActions
         displayName={member.displayName}
-        hasPlan={
-          Boolean(member.razorpaySubscriptionId) &&
-          (member.state === "active" || member.state === "lapsed")
-        }
+        isActive={member.state === "active"}
         refund={
           refund.ok
             ? { eligible: true, amountPaise: refund.amountPaise }

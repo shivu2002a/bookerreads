@@ -7,6 +7,7 @@ export type NextStep = {
   action:
     | "none"
     | "respond"
+    | "pay"
     | "handoff_meetup"
     | "handoff_drop"
     | "handoff_collect"
@@ -20,6 +21,9 @@ export type NextStep = {
 type LoanShape = {
   state: LoanState;
   handoffMethod: "meetup" | "drop_point" | "courier";
+  rentalPaise: number;
+  paymentDueAt: Date | null;
+  paidAt: Date | null;
   outLenderConfirmedAt: Date | null;
   outBorrowerConfirmedAt: Date | null;
   returnLenderConfirmedAt: Date | null;
@@ -34,6 +38,12 @@ const fmtDate = new Intl.DateTimeFormat("en-IN", {
   day: "numeric",
   month: "short",
 });
+const fmtTime = new Intl.DateTimeFormat("en-IN", {
+  weekday: "short",
+  hour: "numeric",
+  minute: "2-digit",
+});
+const rupees = (paise: number) => `₹${Math.round(paise / 100).toLocaleString("en-IN")}`;
 
 /** Plain-language "what happens next" for the loan page, per party and state (task 12.3). */
 export function nextStep(
@@ -62,6 +72,21 @@ export function nextStep(
           };
 
     case "accepted": {
+      // Payment comes before any handoff talk (Requirement 5).
+      if (!loan.paidAt) {
+        const by = loan.paymentDueAt ? fmtTime.format(loan.paymentDueAt) : "soon";
+        return isLender
+          ? {
+              title: "Waiting for payment",
+              body: `The borrower has until ${by} to pay ${rupees(loan.rentalPaise)}. Once they do, you'll arrange the handoff here.`,
+              action: "none",
+            }
+          : {
+              title: `Pay ${rupees(loan.rentalPaise)} to confirm`,
+              body: `The lender said yes. Pay by ${by} to lock in the book; otherwise the request expires and the copy frees up.`,
+              action: "pay",
+            };
+      }
       const mine = isLender ? loan.outLenderConfirmedAt : loan.outBorrowerConfirmedAt;
       const theirs = isLender ? loan.outBorrowerConfirmedAt : loan.outLenderConfirmedAt;
       if (mine && !theirs) {

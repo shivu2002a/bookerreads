@@ -41,6 +41,11 @@ export type LoanListItem = {
   outBorrowerConfirmedAt: Date | null;
   returnLenderConfirmedAt: Date | null;
   returnBorrowerConfirmedAt: Date | null;
+  /** Rental snapshot (Requirement 5). */
+  rentalPaise: number;
+  platformFeePaise: number;
+  paymentDueAt: Date | null;
+  paidAt: Date | null;
 };
 
 const onTimeReturns = sql<number>`(
@@ -63,6 +68,10 @@ function baseSelect(db: DbOrTx) {
       outBorrowerConfirmedAt: loans.outBorrowerConfirmedAt,
       returnLenderConfirmedAt: loans.returnLenderConfirmedAt,
       returnBorrowerConfirmedAt: loans.returnBorrowerConfirmedAt,
+      rentalPaise: loans.rentalPaise,
+      platformFeePaise: loans.platformFeePaise,
+      paymentDueAt: loans.paymentDueAt,
+      paidAt: loans.paidAt,
       bookId: books.id,
       title: books.title,
       authors: books.authors,
@@ -96,6 +105,10 @@ function toItem(r: BaseRow): LoanListItem {
     outBorrowerConfirmedAt: r.outBorrowerConfirmedAt,
     returnLenderConfirmedAt: r.returnLenderConfirmedAt,
     returnBorrowerConfirmedAt: r.returnBorrowerConfirmedAt,
+    rentalPaise: r.rentalPaise,
+    platformFeePaise: r.platformFeePaise,
+    paymentDueAt: r.paymentDueAt,
+    paidAt: r.paidAt,
     book: { id: r.bookId, title: r.title, authors: r.authors, coverUrl: r.coverUrl },
     copy: { id: r.copyId, condition: r.condition, listingPhotoPath: r.listingPhotoPath },
     lender: r.lender,

@@ -6,8 +6,10 @@ import { useEffect, useState, useTransition } from "react";
 import {
   confirmHandoffWithCode,
   confirmHandoffWithPhoto,
+  confirmRentalCheckout,
   confirmReturnWithCode,
   confirmReturnWithPhoto,
+  createRentalCheckout,
   extendLoan,
   openDispute,
 } from "@/app/(member)/loans/actions";
@@ -17,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { NextStep } from "@/lib/loans/next-step";
+import { formatPaise } from "@/lib/money";
 import type { Party } from "@/lib/loans/types";
 import { isNetworkError, outbox, subscribeOutbox } from "@/lib/offline/outbox";
 import { installOutboxReplay } from "@/lib/offline/replay";
@@ -31,6 +34,8 @@ export type LoanActionsProps = {
   dropPoint: { id: string; name: string; address: string } | null;
   meetupSpots: string[];
   canExtend: boolean;
+  /** Rental price the borrower owes; drives the Pay block. */
+  rentalPaise: number;
 };
 
 /**
@@ -68,6 +73,8 @@ export function LoanActions(props: LoanActionsProps) {
   switch (props.step.action) {
     case "respond":
       return <Button render={<Link href="/requests" />}>Respond to this request</Button>;
+    case "pay":
+      return <PayBlock loanId={props.loanId} amountPaise={props.rentalPaise} />;
     case "handoff_meetup":
       return <MeetupBlock {...props} phase="out" />;
     case "return_meetup":
@@ -127,6 +134,58 @@ function useConfirm() {
     });
   }
   return { pending, error, confirmed, run };
+}
+
+/**
+ * Borrower pays the rental price through Razorpay Checkout (Requirement 5).
+ * The checkout script loads on demand, so this block costs nothing until tapped.
+ */
+function PayBlock({ loanId, amountPaise }: { loanId: string; amountPaise: number }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function pay() {
+    setBusy(true);
+    setError(null);
+    try {
+      const handle = await createRentalCheckout(loanId);
+      if (!handle.ok) {
+        setError(handle.message);
+        return;
+      }
+      const { openCheckout } = await import("@/lib/payments/checkout-client");
+      const result = await openCheckout(handle.data);
+      const confirmed = await confirmRentalCheckout({ loanId, ...result });
+      if (!confirmed.ok) {
+        setError(confirmed.message);
+        return;
+      }
+      toast.success("Paid. Now arrange the handoff.");
+      router.refresh();
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg !== "dismissed") setError(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Button size="lg" onClick={() => void pay()} disabled={busy}>
+        {busy ? "Opening payment…" : `Pay ${formatPaise(amountPaise)}`}
+      </Button>
+      {error && (
+        <p role="alert" className="text-destructive text-sm">
+          {error}
+        </p>
+      )}
+      <p className="text-muted-foreground text-xs">
+        UPI, cards and netbanking via Razorpay. Refunded in full if the handoff never happens.
+      </p>
+    </div>
+  );
 }
 
 function ConfirmedNotice() {

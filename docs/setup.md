@@ -97,41 +97,24 @@ Check: `pnpm dev`, open http://localhost:3000/login, enter `99999 00001`, code `
 
 ## 3. Payments: Razorpay (test mode)
 
-Razorpay handles the monthly subscription, the deposit, top-ups, refunds, and (later) payouts.
+Razorpay handles the ₹500 refundable deposit, per-loan rental payments, refunds, and (later) payouts. There is no subscription product to configure.
 
 1. https://dashboard.razorpay.com → sign up → stay in **Test Mode** (toggle top-left).
 2. Settings → API Keys → Generate Test Key. Copy:
    - Key Id → `RAZORPAY_KEY_ID` (starts `rzp_test_`)
    - Key Secret → `RAZORPAY_KEY_SECRET`
-3. Subscriptions → Plans → Create plan, three times:
-
-   | Name    | Billing | Amount |
-   | ------- | ------- | ------ |
-   | Reader  | Monthly | ₹149   |
-   | Regular | Monthly | ₹249   |
-   | Heavy   | Monthly | ₹399   |
-
-   Copy each `plan_...` id into the database (the seed writes placeholders):
-
-   ```sql
-   update plans set razorpay_plan_id = 'plan_XXXX' where code = 'reader';
-   update plans set razorpay_plan_id = 'plan_YYYY' where code = 'regular';
-   update plans set razorpay_plan_id = 'plan_ZZZZ' where code = 'heavy';
-   ```
-
-   (Re-running `pnpm db:seed` resets these; edit `db/seed/data.ts` if you want them to stick.)
-
+3. Nothing else to create: deposits and rentals are one-off Orders raised by the app.
 4. Webhooks need a public URL. Run a tunnel in another terminal:
    ```sh
    brew install ngrok && ngrok http 3000     # or: npx localtunnel --port 3000
    ```
    Then Razorpay → Settings → Webhooks → Add: URL `https://<tunnel>/api/webhooks/razorpay`, set a secret and copy it to `RAZORPAY_WEBHOOK_SECRET`, and tick these events:
-   `subscription.authenticated`, `subscription.activated`, `subscription.charged`, `subscription.pending`, `subscription.halted`, `subscription.cancelled`, `subscription.completed`, `payment.captured`, `payment.failed`, `refund.processed`.
+   `payment.captured`, `payment.failed`, `refund.processed`.
 5. Set `NEXT_PUBLIC_APP_URL` to the tunnel URL while testing webhooks (it's used in message deep links), or leave it as localhost if you only care that the webhook arrives.
 
 Test cards: `4111 1111 1111 1111`, any future expiry, any CVV; UPI `success@razorpay`.
 
-Check: log in as a `registered` member (e.g. `919999900020` Varun, who has 3+ copies), go to `/activate`, pick a plan, pay with the test card, pay the deposit. The panel should flip to "You can borrow." Watch the dev server log for `processed` webhook outcomes. `pnpm ledger:check` shows the ₹750 deposit.
+Check: log in as a `registered` member (e.g. `919999900020` Varun, who has copies listed), go to `/activate`, pay the deposit with the test card. The panel should flip to "You can borrow." Then request a priced copy as that member, accept it as the lender (`919999900001`), and pay the rental from the loan page. Watch the dev server log for `processed` webhook outcomes. `pnpm ledger:check` shows the ₹500 deposit and the lender's rental credit.
 
 ## 4. Notifications: Interakt (WhatsApp) and MSG91 (SMS)
 
@@ -163,9 +146,9 @@ Not needed to run locally; listed so nothing is a surprise later.
 
 - **Vercel**: import the repo, region `bom1` (in `vercel.json`), paste every variable from `.env.example`. Cron and preview deploys come free with it. Add `LHCI_GITHUB_APP_TOKEN` in GitHub secrets if you want Lighthouse results posted on PRs.
 - **Supabase SMS for real OTPs**: Supabase doesn't ship MSG91 natively. Options: use Twilio/Vonage as the OTP sender (simplest), or Authentication → Hooks → "Send SMS" pointing at a small endpoint that calls MSG91. Either way the app code is unchanged.
-- **Razorpay live**: KYC, then repeat section 3 in Live Mode with live keys, live plans, and the production webhook URL. Activate RazorpayX for bulk UPI payouts (CSV upload from `/admin/payouts`).
+- **Razorpay live**: KYC, then repeat section 3 in Live Mode with live keys and the production webhook URL. Activate RazorpayX for bulk UPI payouts (CSV upload from `/admin/payouts`).
 - **Sentry** (`NEXT_PUBLIC_SENTRY_DSN`, `SENTRY_AUTH_TOKEN` for source maps) and **PostHog** (`NEXT_PUBLIC_POSTHOG_KEY`): optional; leave blank to disable.
-- **Production data**: do **not** run `pnpm db:seed`. Insert clusters, plans, drop points, and `config` rows by hand, log in once, then `update members set is_admin = true where id = '<you>'`.
+- **Production data**: do **not** run `pnpm db:seed`. Insert clusters and `config` rows by hand, log in once, then `update members set is_admin = true where id = '<you>'`.
 - **Google Books**: `GOOGLE_BOOKS_API_KEY` is optional. Without it you get the anonymous quota (1,000/day), and lookups fall back to Open Library anyway.
 
 The full pre-launch list is in `docs/launch-checklist.md`.
@@ -200,8 +183,7 @@ All use code `123456` once added as test OTPs in Supabase.
 | Phone      | Member | State                           | Good for                    |
 | ---------- | ------ | ------------------------------- | --------------------------- |
 | 9999900001 | Ananya | active, **admin**               | `/admin`, lending, disputes |
-| 9999900002 | Rohan  | active, heavy plan              | borrowing, 3 loans at once  |
-| 9999900016 | Manish | lapsed                          | lapsed-member messaging     |
+| 9999900002 | Rohan  | active                          | borrowing                   |
 | 9999900018 | Nikhil | suspended (lost a book)         | top-up and suspension paths |
-| 9999900020 | Varun  | registered, 3+ copies           | the `/activate` flow        |
+| 9999900020 | Varun  | registered, copies listed       | the `/activate` flow        |
 | 9999900030 | Yash   | registered, 0 copies, new today | onboarding, listing cap     |

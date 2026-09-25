@@ -18,7 +18,6 @@ const EXPECTED_TABLES = [
   "cluster_waitlist",
   "otp_attempts",
   "members",
-  "plans",
   "books",
   "copies",
   "drop_points",
@@ -27,8 +26,7 @@ const EXPECTED_TABLES = [
   "loan_messages",
   "disputes",
   "ledger_entries",
-  "subscription_payments",
-  "pool_runs",
+  "loan_payments",
   "payouts",
   "webhook_events",
   "trust_events",
@@ -124,32 +122,17 @@ describe("schema migration", () => {
     expect(borrower.isAdmin).toBe(false);
   });
 
-  it("rejects a duplicate pool run for the same month", async () => {
-    const run = {
+  it("rejects a second payout for the same member and month", async () => {
+    const row = {
+      memberId: seeded.lender.id,
       month: new Date("2026-08-01"),
-      revenuePaise: 100000,
-      poolPct: 30,
-      poolPaise: 30000,
-      carryInPaise: 0,
-      loanCount: 3,
-      perLoanPaise: 10000,
-      carryOutPaise: 0,
-      statement: {
-        month: "2026-08-01",
-        revenuePaise: 100000,
-        poolPct: 30,
-        carryInPaise: 0,
-        poolPaise: 30000,
-        loanCount: 3,
-        perLoanPaise: 10000,
-        carryOutPaise: 0,
-        lenders: [],
-      },
+      amountPaise: 25000,
+      upiId: "x@upi",
+      batchId: "batch_2026-08",
     };
-    await db.insert(s.poolRuns).values(run);
-    await expectDbError(db.insert(s.poolRuns).values(run), "pool_runs_month_unique");
+    await db.insert(s.payouts).values(row);
+    await expectDbError(db.insert(s.payouts).values(row), "payouts_member_month_uidx");
   });
-
   it("dedupes provider webhooks by (provider, event id)", async () => {
     const row = {
       provider: "razorpay",

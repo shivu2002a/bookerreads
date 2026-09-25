@@ -10,6 +10,7 @@ import { requireOnboardedMember } from "@/lib/auth/current-member";
 import { loadConfig } from "@/lib/config/load";
 import { nextStep } from "@/lib/loans/next-step";
 import { getLoanForViewer, isChatOpen } from "@/lib/loans/queries";
+import { formatPaise } from "@/lib/money";
 import { signedReadUrl } from "@/lib/photos/storage";
 import { clusters } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -26,6 +27,10 @@ const when = new Intl.DateTimeFormat("en-IN", {
 const EVENT_LABEL: Record<string, string> = {
   "loan.requested": "Requested",
   "loan.accepted": "Accepted",
+  "loan.paid": "Rental paid",
+  "loan.payment_expired": "Payment window passed",
+  "payment.refund_requested": "Refund requested",
+  "payment.refunded": "Rental refunded",
   "loan.declined": "Declined",
   "loan.expired": "Request expired",
   "loan.handoff_confirmed": "Handover confirmed by one side",
@@ -98,6 +103,13 @@ export default async function LoanPage({ params }: { params: Promise<{ loanId: s
             </Link>
             <TrustScore score={other.trustScore} />
           </div>
+          <p className="text-muted-foreground text-xs">
+            {loan.rentalPaise === 0 ? "Free loan" : `Rental ${formatPaise(loan.rentalPaise)}`}
+            {party === "lender" && loan.rentalPaise > 0
+              ? ` · you receive ${formatPaise(loan.rentalPaise - loan.platformFeePaise)}`
+              : ""}
+            {loan.paidAt ? " · paid" : ""}
+          </p>
         </div>
       </header>
 
@@ -121,6 +133,7 @@ export default async function LoanPage({ params }: { params: Promise<{ loanId: s
             }
             meetupSpots={meetupSpots}
             canExtend={canExtend}
+            rentalPaise={loan.rentalPaise}
           />
         </div>
       </section>

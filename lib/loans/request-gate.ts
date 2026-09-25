@@ -34,12 +34,7 @@ export type GateDecision =
   | {
       kind: "blocked";
       reason:
-        | "own_copy"
-        | "on_loan"
-        | "other_cluster"
-        | "needs_activation"
-        | "trust_floor"
-        | "suspended"
+        "own_copy" | "on_loan" | "other_cluster" | "needs_activation" | "trust_floor" | "suspended";
 
       hint: string;
     };

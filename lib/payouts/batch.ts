@@ -1,29 +1,31 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db, DbOrTx } from "@/db/client";
-import { adminActions, events, members, notifications, payouts, poolRuns } from "@/db/schema";
+import { adminActions, events, members, notifications, payouts } from "@/db/schema";
 import type { AppConfig } from "@/lib/config/schema";
 import { postEntry } from "@/lib/ledger/post";
 
 export type PayoutRow = typeof payouts.$inferSelect;
 
+/** First day of the month, UTC. */
+export const startOfMonthUtc = (d: Date) =>
+  new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+export const previousMonthUtc = (d: Date) =>
+  new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1));
+
 /**
- * Requirement 10.4: everyone at or above the threshold with a verified UPI id
- * gets a pending payout for their full balance. One batch per pool run;
+ * Requirement 10.3: everyone at or above the threshold with a verified UPI id
+ * gets a pending payout for their full balance. One batch per month;
  * re-running returns the existing batch.
  */
 export async function generatePayoutBatch(
   db: Db,
-  poolRunId: string,
+  month: Date,
   config: AppConfig,
   now = new Date(),
 ): Promise<{ batchId: string; created: number; payouts: PayoutRow[] }> {
   return db.transaction(async (tx) => {
-    const [run] = await tx
-      .select({ month: poolRuns.month })
-      .from(poolRuns)
-      .where(eq(poolRuns.id, poolRunId));
-    if (!run) throw new Error(`pool run ${poolRunId} not found`);
-    const batchId = `batch_${run.month.toISOString().slice(0, 7)}`;
+    const monthStart = startOfMonthUtc(month);
+    const batchId = `batch_${monthStart.toISOString().slice(0, 7)}`;
 
     const existing = await tx.select().from(payouts).where(eq(payouts.batchId, batchId));
     if (existing.length) return { batchId, created: 0, payouts: existing };
@@ -47,7 +49,7 @@ export async function generatePayoutBatch(
       .values(
         eligible.map((m) => ({
           memberId: m.id,
-          poolRunId,
+          month: monthStart,
           amountPaise: m.balance,
           upiId: m.upiId!,
           status: "pending" as const,
@@ -56,9 +58,18 @@ export async function generatePayoutBatch(
         })),
       )
       .returning();
+    await tx.insert(events).values(
+      rows.map((r) => ({
+        aggregate: "member" as const,
+        aggregateId: r.memberId,
+        type: "payout.pending",
+        payload: { batchId, payoutId: r.id, amountPaise: r.amountPaise },
+        createdAt: now,
+      })),
+    );
     await tx.insert(events).values({
-      aggregate: "pool_run",
-      aggregateId: poolRunId,
+      aggregate: "member",
+      aggregateId: rows[0].memberId,
       type: "payout_batch.generated",
       payload: {
         batchId,

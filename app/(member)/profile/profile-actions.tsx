@@ -16,7 +16,7 @@ import {
 type Refund = { eligible: true; amountPaise: number } | { eligible: false; reason: string };
 
 const REFUND_HINT: Record<string, string> = {
-  not_cancelled: "Available once your plan is cancelled and the paid period has ended.",
+  not_cancelled: "Available once you cancel your membership.",
   open_loans: "Available once all your loans are returned.",
   open_dispute: "Available once the open dispute is resolved.",
   nothing_to_refund: "No deposit is held.",
@@ -24,14 +24,14 @@ const REFUND_HINT: Record<string, string> = {
 
 export function ProfileActions({
   displayName,
-  hasPlan,
+  isActive,
   refund,
   depositPaise,
   payoutPaise,
   payoutThresholdPaise,
 }: {
   displayName: string;
-  hasPlan: boolean;
+  isActive: boolean;
   refund: Refund;
   depositPaise: number;
   payoutPaise: number;
@@ -78,22 +78,23 @@ export function ProfileActions({
 
       <section className="flex flex-col gap-3 rounded-lg border p-4">
         <h2 className="text-sm font-medium">Membership and deposit</h2>
-        {hasPlan ? (
+        {isActive ? (
           <div className="flex items-center justify-between gap-3 text-sm">
             <span>
-              Cancel your plan at the end of the current paid month. You can keep lending.
+              Stop borrowing. Open loans continue, you can keep lending, and your deposit becomes
+              refundable once nothing is outstanding.
             </span>
             <Button
               variant="outline"
               size="sm"
               disabled={pending}
-              onClick={() => run(cancelMembership, "Your plan will end after the current period")}
+              onClick={() => run(cancelMembership, "Borrowing cancelled")}
             >
-              Cancel plan
+              Cancel borrowing
             </Button>
           </div>
         ) : (
-          <p className="text-muted-foreground text-sm">No active plan.</p>
+          <p className="text-muted-foreground text-sm">Borrowing is not active.</p>
         )}
         <div className="flex items-center justify-between gap-3 text-sm">
           <span>

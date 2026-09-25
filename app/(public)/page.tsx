@@ -11,8 +11,8 @@ export default function LandingPage() {
         </h1>
         <p className="drop-cap text-lg leading-relaxed">
           BookerReads is a members-only lending circle for Bangalore neighbourhoods. List the books
-          you already own, borrow from readers within a fifteen-minute walk, and earn a share of the
-          circle&apos;s dues whenever your books go out.
+          you already own at a price you choose, borrow from readers within a fifteen-minute walk,
+          and earn whenever your books go out.
         </p>
       </div>
 
@@ -40,17 +40,18 @@ export default function LandingPage() {
         </div>
         <div className="flex flex-col gap-1">
           <dt className="kicker">II.</dt>
-          <dd className="font-heading text-lg font-semibold">Borrow from ₹149 a month</dd>
+          <dd className="font-heading text-lg font-semibold">Pay per book, no subscription</dd>
           <dd className="text-muted-foreground text-sm leading-relaxed">
-            Choose a plan, leave a refundable deposit, and request any volume in your cluster.
+            Each lender names a price, often the cost of a coffee, sometimes nothing. Leave a
+            refundable deposit and request any volume in your cluster.
           </dd>
         </div>
         <div className="flex flex-col gap-1">
           <dt className="kicker">III.</dt>
-          <dd className="font-heading text-lg font-semibold">Lenders are paid</dd>
+          <dd className="font-heading text-lg font-semibold">Lenders set the price</dd>
           <dd className="text-muted-foreground text-sm leading-relaxed">
-            Three-tenths of all subscription revenue is shared among lenders, in proportion to
-            completed loans.
+            Name your rental price and loan period. When the book goes out, the price less a small
+            platform fee is yours, paid monthly by UPI.
           </dd>
         </div>
       </dl>

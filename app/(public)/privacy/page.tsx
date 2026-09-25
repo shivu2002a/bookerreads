@@ -30,8 +30,8 @@ export default function PrivacyPage() {
         </li>
         <li>
           <strong>Loan and payment records.</strong> Requests, handoffs, returns, chat messages,
-          deposits, pool credits, and payouts. Card and UPI details are handled by Razorpay; we
-          store Razorpay&apos;s identifiers and your payout UPI ID.
+          deposits, rental payments, earnings, and payouts. Card and UPI details are handled by
+          Razorpay; we store Razorpay&apos;s identifiers and your payout UPI ID.
         </li>
         <li>
           <strong>Device and usage data.</strong> Error reports (Sentry) and product analytics
@@ -62,9 +62,9 @@ export default function PrivacyPage() {
 
       <h2>Your choices</h2>
       <p>
-        You can change your display name, unlist books, cancel your plan, request your deposit
-        refund, and delete your account from the app. For a copy of your data or any question, write
-        to hello@bookerreads.in.
+        You can change your display name, unlist books, stop borrowing, request your deposit refund,
+        and delete your account from the app. For a copy of your data or any question, write to
+        hello@bookerreads.in.
       </p>
 
       <h2>Providers</h2>

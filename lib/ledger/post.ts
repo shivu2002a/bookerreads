@@ -12,7 +12,6 @@ export type PostEntryInput = {
   /** Signed. Positive increases the balance. */
   amountPaise: number;
   loanId?: string | null;
-  poolRunId?: string | null;
   payoutId?: string | null;
   razorpayRef?: string | null;
   note?: string | null;
@@ -87,7 +86,6 @@ export async function postEntry(tx: DbOrTx, input: PostEntryInput): Promise<Post
       kind: input.kind,
       amountPaise: amount,
       loanId: input.loanId ?? null,
-      poolRunId: input.poolRunId ?? null,
       payoutId: input.payoutId ?? null,
       razorpayRef: input.razorpayRef ?? null,
       note: input.note ?? null,

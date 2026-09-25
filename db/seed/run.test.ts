@@ -26,7 +26,6 @@ describe("seed", () => {
   it("produces the volumes the plan asks for", async () => {
     expect(summary.clusters).toBe(3);
     expect(await count("clusters", "status = 'open'")).toBe(1);
-    expect(summary.plans).toBe(3);
     expect(summary.dropPoints).toBe(2);
     expect(await count("books")).toBe(202); // 200 fixture + 2 manual
     expect(summary.members).toBe(30);
@@ -102,40 +101,28 @@ describe("seed", () => {
       needs_topup: boolean;
     }>(sql`
       select display_name, deposit_balance_paise, needs_topup from members
-      where plan_id is not null and state in ('active','lapsed','suspended')`);
-    const short = rows.rows.filter((r) => Number(r.deposit_balance_paise) < 75000);
+      where state in ('active','suspended')`);
+    const short = rows.rows.filter((r) => Number(r.deposit_balance_paise) < 50000);
     // The suspended member lost a book; the resolved dispute's borrower paid a partial charge.
     expect(short.length).toBe(2);
     for (const r of short) expect(r.needs_topup).toBe(true);
   });
 
-  it("pool run matches the formula over last month's captured revenue and completed loans", async () => {
-    const run = await db.execute<{
-      revenue_paise: number;
-      pool_paise: number;
-      loan_count: number;
-      per_loan_paise: number;
-      carry_out_paise: number;
-    }>(
-      sql`select revenue_paise, pool_paise, loan_count, per_loan_paise, carry_out_paise from pool_runs`,
+  it("credits lenders rental minus the 15% fee for every loan that went out", async () => {
+    const r = await db.execute<{ expected: string; credited: string; payments: string }>(sql`
+      select
+        (select coalesce(sum(rental_paise - platform_fee_paise),0)::text from loans where handed_off_at is not null) as expected,
+        (select coalesce(sum(amount_paise),0)::text from ledger_entries where kind = 'rental_credit') as credited,
+        (select count(*)::text from loan_payments where status = 'captured') as payments`);
+    expect(Number(r.rows[0].credited)).toBe(Number(r.rows[0].expected));
+    expect(Number(r.rows[0].credited)).toBeGreaterThan(0);
+    expect(Number(r.rows[0].payments)).toBe(
+      summary.loanPayments - (await count("loan_payments", "status = 'refunded'")),
     );
-    expect(run.rows).toHaveLength(1);
-    const r = run.rows[0];
-    const revenue = await db.execute<{ sum: string }>(
-      sql`select coalesce(sum(amount_paise),0)::text as sum from subscription_payments where status='captured' and pool_month = ${summary.poolRunMonth}::date`,
-    );
-    expect(Number(r.revenue_paise)).toBe(Number(revenue.rows[0].sum));
-    expect(Number(r.pool_paise)).toBe(Math.floor((Number(r.revenue_paise) * 30) / 100));
-    expect(Number(r.loan_count)).toBeGreaterThanOrEqual(5);
-    expect(Number(r.per_loan_paise) * Number(r.loan_count) + Number(r.carry_out_paise)).toBe(
-      Number(r.pool_paise),
-    );
-    const credits = await db.execute<{ sum: string }>(
-      sql`select coalesce(sum(amount_paise),0)::text as sum from ledger_entries where kind='pool_credit'`,
-    );
-    expect(Number(credits.rows[0].sum)).toBe(Number(r.per_loan_paise) * Number(r.loan_count));
+    expect(
+      await count("loans", "state = 'accepted' and paid_at is null and payment_due_at is not null"),
+    ).toBe(1);
   });
-
   it("trust scores stay within 0..100 and the lost-book borrower is below 50", async () => {
     expect(await count("members", "trust_score < 0 or trust_score > 100")).toBe(0);
     const s = await db.execute<{ trust_score: number }>(
@@ -148,6 +135,6 @@ describe("seed", () => {
     const again = await seed(db, { now: NOW });
     expect(again.copies).toBe(300);
     expect(await count("members")).toBe(30);
-    expect(await count("pool_runs")).toBe(1);
+    expect(await count("loan_payments")).toBe(again.loanPayments);
   }, 60_000);
 });

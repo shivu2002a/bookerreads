@@ -29,6 +29,8 @@ CREATE TYPE "public"."event_aggregate" AS ENUM('member', 'copy', 'loan', 'disput
 ALTER TABLE "events" ALTER COLUMN "aggregate" SET DATA TYPE "public"."event_aggregate" USING "aggregate"::"public"."event_aggregate";--> statement-breakpoint
 
 -- 4. Members: drop plan/subscription columns; `lapsed` members fall back to registered.
+-- member_public (0001) reads members.state, so it is dropped here and recreated below.
+DROP VIEW IF EXISTS public.member_public;--> statement-breakpoint
 ALTER TABLE "members" DROP CONSTRAINT "members_plan_id_plans_id_fk";--> statement-breakpoint
 ALTER TABLE "members" DROP COLUMN "plan_id";--> statement-breakpoint
 ALTER TABLE "members" DROP COLUMN "razorpay_subscription_id";--> statement-breakpoint
@@ -40,6 +42,12 @@ DROP TYPE "public"."member_state";--> statement-breakpoint
 CREATE TYPE "public"."member_state" AS ENUM('registered', 'active', 'suspended', 'cancelled');--> statement-breakpoint
 ALTER TABLE "members" ALTER COLUMN "state" SET DEFAULT 'registered'::"public"."member_state";--> statement-breakpoint
 ALTER TABLE "members" ALTER COLUMN "state" SET DATA TYPE "public"."member_state" USING "state"::"public"."member_state";--> statement-breakpoint
+CREATE OR REPLACE VIEW public.member_public AS
+  SELECT id, display_name, cluster_id, trust_score, created_at AS member_since,
+         state IN ('active') AS can_borrow
+  FROM members
+  WHERE deleted_at IS NULL AND display_name IS NOT NULL;--> statement-breakpoint
+GRANT SELECT ON public.member_public TO anon, authenticated;--> statement-breakpoint
 
 -- 5. Drop the subscription-era tables (their RLS policies go with them).
 DROP TABLE "subscription_payments" CASCADE;--> statement-breakpoint

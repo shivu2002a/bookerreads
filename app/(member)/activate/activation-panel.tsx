@@ -8,49 +8,26 @@ import { Button } from "@/components/ui/button";
 import type { ActivationStatus } from "@/lib/members/activation";
 import { formatPaise } from "@/lib/money";
 import { openCheckout } from "@/lib/payments/checkout-client";
-import {
-  confirmCheckout,
-  createDepositOrder,
-  startSubscription,
-  type CheckoutHandle,
-} from "./actions";
-
-type Plan = {
-  code: string;
-  name: string;
-  pricePaise: number;
-  concurrentLimit: number;
-  loanPeriodDays: number;
-};
+import { confirmCheckout, createDepositOrder } from "./actions";
 
 export function ActivationPanel({
   initialStatus,
-  plans,
-  currentPlanCode,
   depositPaise,
   returnTo,
-  memberState,
 }: {
   initialStatus: ActivationStatus;
-  plans: Plan[];
-  currentPlanCode?: string;
   depositPaise: number;
   returnTo: string;
-  memberState: string;
 }) {
   const router = useRouter();
   const [status, setStatus] = useState(initialStatus);
-  const [planCode, setPlanCode] = useState(currentPlanCode ?? plans[0]?.code);
-  const [busy, setBusy] = useState<"plan" | "deposit" | null>(null);
+  const [busy, setBusy] = useState(false);
   const [, start] = useTransition();
 
-  async function pay(
-    kind: "plan" | "deposit",
-    getHandle: () => Promise<{ ok: true; data: CheckoutHandle } | { ok: false; message: string }>,
-  ) {
-    setBusy(kind);
+  async function payDeposit() {
+    setBusy(true);
     try {
-      const handle = await getHandle();
+      const handle = await createDepositOrder();
       if (!handle.ok) {
         toast.error(handle.message);
         return;
@@ -62,7 +39,7 @@ export function ActivationPanel({
         return;
       }
       setStatus(confirmed.data);
-      toast.success(kind === "plan" ? "Plan started" : "Deposit received");
+      toast.success("Deposit received");
       if (confirmed.data.ok) {
         toast.success("You're all set. Happy borrowing!");
         start(() => router.push(returnTo));
@@ -71,90 +48,40 @@ export function ActivationPanel({
       const msg = (e as Error).message;
       if (msg !== "dismissed") toast.error(msg);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
   const c = status.checks;
-
   return (
     <div className="flex flex-col gap-6">
       <ol className="flex flex-col gap-3">
         <Check ok={c.borrowGate.ok} label={c.borrowGate.label} hint={c.borrowGate.hint} n={1}>
           {!c.borrowGate.ok && (
             <Button size="sm" variant="outline" render={<Link href="/shelf/add" />}>
-              Add books
+              Add a book
             </Button>
           )}
         </Check>
-
-        <Check
-          ok={c.subscription.ok}
-          label={c.subscription.label}
-          hint={
-            memberState === "lapsed"
-              ? c.subscription.hint
-              : "Change or cancel any time. Lenders receive 30% of what you pay."
-          }
-          n={2}
-        >
-          {!c.subscription.ok && (
-            <div className="flex flex-col gap-3">
-              <div className="grid gap-2 sm:grid-cols-3">
-                {plans.map((p) => (
-                  <label
-                    key={p.code}
-                    className={`flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-sm ${planCode === p.code ? "border-foreground bg-muted/40" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="plan"
-                      className="sr-only"
-                      checked={planCode === p.code}
-                      onChange={() => setPlanCode(p.code)}
-                    />
-                    <span className="font-medium">{p.name}</span>
-                    <span className="text-lg font-semibold">
-                      {formatPaise(p.pricePaise)}
-                      <span className="text-muted-foreground text-xs font-normal">/month</span>
-                    </span>
-                    <span className="text-muted-foreground text-xs">
-                      {p.concurrentLimit} book{p.concurrentLimit === 1 ? "" : "s"} at a time ·{" "}
-                      {p.loanPeriodDays} days each
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <Button
-                onClick={() => pay("plan", () => startSubscription(planCode))}
-                disabled={busy !== null || !planCode}
-              >
-                {busy === "plan" ? "Opening payment…" : "Start plan"}
-              </Button>
-            </div>
-          )}
-        </Check>
-
         <Check
           ok={c.deposit.ok}
           label={c.deposit.label}
           hint={
             c.deposit.ok
-              ? "Refunded within 7 days of cancelling, if nothing is outstanding."
+              ? "Refunded within 7 days of leaving, if nothing is outstanding."
               : c.deposit.hint
           }
-          n={3}
+          n={2}
         >
           {!c.deposit.ok && (
-            <Button onClick={() => pay("deposit", createDepositOrder)} disabled={busy !== null}>
-              {busy === "deposit"
+            <Button onClick={payDeposit} disabled={busy}>
+              {busy
                 ? "Opening payment…"
                 : `Pay ${formatPaise(depositPaise - status.counts.depositPaise)}`}
             </Button>
           )}
         </Check>
       </ol>
-
       {status.ok ? (
         <div className="rounded-lg border p-4">
           <p className="font-medium">You can borrow.</p>

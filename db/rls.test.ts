@@ -79,10 +79,9 @@ async function asFails(
 }
 
 describe("RLS: reference data", () => {
-  it("anon can read clusters, books, active plans, and active drop points", async () => {
+  it("anon can read clusters, books, and active drop points", async () => {
     expect((await as("anon", null, sql`select id from clusters`)).length).toBe(3);
     expect((await as("anon", null, sql`select id from books`)).length).toBeGreaterThan(200);
-    expect((await as("anon", null, sql`select id from plans`)).length).toBe(3);
     expect((await as("anon", null, sql`select id, name from drop_points`)).length).toBe(2);
   });
 
@@ -209,7 +208,7 @@ describe("RLS: money and trust", () => {
   it("ledger entries are visible to their member and admins only", async () => {
     const someone = (
       await db.execute<{ member_id: string }>(
-        sql`select member_id from ledger_entries where kind = 'pool_credit' limit 1`,
+        sql`select member_id from ledger_entries where kind = 'rental_credit' limit 1`,
       )
     ).rows[0].member_id;
     const auth = (
@@ -226,8 +225,8 @@ describe("RLS: money and trust", () => {
     expect(await as("anon", null, sql`select id from ledger_entries`)).toHaveLength(0);
   });
 
-  it("pool runs, config, events, and admin actions are admin-only", async () => {
-    for (const table of ["pool_runs", "config", "events", "admin_actions", "webhook_events"]) {
+  it("config, events, admin actions, and webhook events are admin-only", async () => {
+    for (const table of ["config", "events", "admin_actions", "webhook_events"]) {
       const q = sql.raw(`select 1 from ${table} limit 1`);
       expect(await as("authenticated", lender.auth_user_id, q), table).toHaveLength(0);
     }

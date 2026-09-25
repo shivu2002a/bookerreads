@@ -28,7 +28,6 @@ export default async function AdminMembersPage({
           <tr>
             <th className="py-1">Name</th>
             <th>State</th>
-            <th>Plan</th>
             <th>Trust</th>
             <th>Deposit</th>
             <th>Payout</th>
@@ -45,7 +44,6 @@ export default async function AdminMembersPage({
                 {m.deletedAt && <span className="text-muted-foreground ml-1 text-xs">deleted</span>}
               </td>
               <td>{m.state}</td>
-              <td>{m.plan ?? "—"}</td>
               <td>{m.trustScore}</td>
               <td>{formatPaise(m.deposit)}</td>
               <td>{formatPaise(m.payout)}</td>

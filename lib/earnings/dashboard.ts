@@ -1,8 +1,9 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { books, copies, ledgerEntries, loans, payouts, poolRuns } from "@/db/schema";
+import { books, copies, ledgerEntries, loans, payouts } from "@/db/schema";
 import type { AppConfig } from "@/lib/config/schema";
-import { estimateCurrentMonth } from "@/lib/pool/run";
+import { lenderEarningsSummary } from "@/lib/payments/rental";
+import { startOfMonthUtc } from "@/lib/payouts/batch";
 
 export type EarningsDashboard = {
   balancePaise: number;
@@ -10,19 +11,13 @@ export type EarningsDashboard = {
   upi: { id: string | null; verified: boolean };
   thisMonth: {
     month: string;
-    completedLoans: number;
-    perLoanPaise: number;
-    estimatePaise: number;
-    revenuePaise: number;
-    totalLoans: number;
+    /** Loans that went out this month (earnings are credited at handoff). */
+    loans: number;
+    earnedPaise: number;
   };
+  allTimePaise: number;
+  platformFeePct: number;
   nextPayoutDate: Date;
-  lastStatement: {
-    month: string;
-    perLoanPaise: number;
-    myLoans: number;
-    creditPaise: number;
-  } | null;
   recentPayouts: Array<{ id: string; amountPaise: number; status: string; createdAt: Date }>;
   recentCredits: Array<{
     id: string;
@@ -35,7 +30,7 @@ export type EarningsDashboard = {
   idle: Array<{ copyId: string; title: string; listedDays: number }>;
 };
 
-/** Requirement 10.6: everything on the lender's earnings page. */
+/** Requirement 10.5: everything on the lender's earnings page. */
 export async function loadEarnings(
   db: Db,
   member: { id: string; payoutBalancePaise: number; upiId: string | null; upiVerified: boolean },
@@ -45,9 +40,9 @@ export async function loadEarnings(
   const since90 = new Date(now.getTime() - 90 * 86_400_000);
   const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 
-  const [estimate, lastRun, recentPayouts, recentCredits, requested, idle] = await Promise.all([
-    estimateCurrentMonth(db, member.id, config, now),
-    db.select().from(poolRuns).orderBy(desc(poolRuns.month)).limit(1),
+  const monthStart = startOfMonthUtc(now);
+  const [summary, recentPayouts, recentCredits, requested, idle] = await Promise.all([
+    lenderEarningsSummary(db, member.id, monthStart),
     db
       .select({
         id: payouts.id,
@@ -102,30 +97,18 @@ export async function loadEarnings(
       .limit(10),
   ]);
 
-  const run = lastRun[0];
-  const mine = run?.statement.lenders.find((l) => l.memberId === member.id);
-
   return {
     balancePaise: member.payoutBalancePaise,
     thresholdPaise: config.payout_threshold_paise,
     upi: { id: member.upiId, verified: member.upiVerified },
     thisMonth: {
-      month: estimate.month,
-      completedLoans: estimate.myLoans,
-      perLoanPaise: estimate.perLoanPaise,
-      estimatePaise: estimate.estimatePaise,
-      revenuePaise: estimate.revenuePaise,
-      totalLoans: estimate.totalLoans,
+      month: monthStart.toISOString().slice(0, 7),
+      loans: summary.thisMonthLoans,
+      earnedPaise: summary.thisMonthPaise,
     },
+    allTimePaise: summary.allTimePaise,
+    platformFeePct: config.platform_fee_pct,
     nextPayoutDate: nextMonth,
-    lastStatement: run
-      ? {
-          month: run.statement.month,
-          perLoanPaise: run.perLoanPaise,
-          myLoans: mine?.loanCount ?? 0,
-          creditPaise: mine?.creditPaise ?? 0,
-        }
-      : null,
     recentPayouts,
     recentCredits,
     mostRequested: requested.map((r) => ({ ...r, requests: Number(r.requests) })),

@@ -30,7 +30,6 @@ import { applyLoanEvent } from "@/lib/loans/persist";
 import { LOAN_STATES } from "@/lib/loans/types";
 import { flushNotifications } from "@/lib/notify";
 import { generatePayoutBatch, markBatchExported, markPayoutResult } from "@/lib/payouts/batch";
-import { runPool } from "@/lib/pool/run";
 
 const uuid = z.uuid();
 const reason = z.string().trim().min(3, "Give a reason (at least 3 characters).").max(1000);
@@ -324,30 +323,19 @@ export async function mergeBooksAction(
 }
 
 // ---------------------------------------------------------------------------
-// pool and payouts
+// payouts
 // ---------------------------------------------------------------------------
 
-export async function runPoolAction(monthIso: string): Promise<ActionResult<{ status: string }>> {
+/** Generate this month's payout batch on demand (normally the monthly cron does it). */
+export async function generateBatchAction(
+  monthIso: string,
+): Promise<ActionResult<{ created: number }>> {
   await requireAdmin();
   const m = new Date(monthIso);
   if (Number.isNaN(m.getTime())) return err("invalid", "Bad month.");
   const db = getDb();
   const config = await loadConfig(db);
-  const res = await guard(() => runPool(db, m, config));
-  if (!res.ok) return res;
-  await flushNotifications();
-  revalidatePath("/admin/pool");
-  return ok({ status: res.data.status });
-}
-
-export async function generateBatchAction(
-  poolRunId: string,
-): Promise<ActionResult<{ created: number }>> {
-  await requireAdmin();
-  if (!uuid.safeParse(poolRunId).success) return err("invalid", "Bad id.");
-  const db = getDb();
-  const config = await loadConfig(db);
-  const res = await guard(() => generatePayoutBatch(db, poolRunId, config));
+  const res = await guard(() => generatePayoutBatch(db, m, config));
   if (!res.ok) return res;
   revalidatePath("/admin/payouts");
   return ok({ created: res.data.created });

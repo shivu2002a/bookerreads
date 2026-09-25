@@ -99,6 +99,8 @@ describe("copies (db)", () => {
   const details = {
     condition: "good" as const,
     replacementValuePaise: 45000,
+    rentalPricePaise: 3000,
+    loanPeriodDays: 21,
     allowedHandoffs: ["meetup" as const],
     minBorrowerTrust: 0,
     notes: "",
@@ -117,6 +119,8 @@ describe("copies (db)", () => {
       expect(res.copy.verificationStatus).toBe("unverified");
       expect(res.copy.clusterId).toBe(clusterId);
       expect(res.copy.replacementValuePaise).toBe(45000);
+      expect(res.copy.rentalPricePaise).toBe(3000);
+      expect(res.copy.loanPeriodDays).toBe(21);
     }
   });
 
@@ -206,17 +210,28 @@ describe("copies (db)", () => {
 
   it("updates details with clamping", async () => {
     const [c] = await db.select().from(copies).where(eq(copies.ownerId, oldOwner)).limit(1);
-    const res = await updateCopyDetails(db, c.id, oldOwner, {
-      ...details,
-      condition: "worn",
-      replacementValuePaise: 250000,
-      minBorrowerTrust: 50,
-      allowedHandoffs: ["meetup", "courier"],
-    });
+    const res = await updateCopyDetails(
+      db,
+      c.id,
+      oldOwner,
+      {
+        ...details,
+        condition: "worn",
+        rentalPricePaise: 99900,
+        loanPeriodDays: 28,
+        replacementValuePaise: 250000,
+        minBorrowerTrust: 50,
+        allowedHandoffs: ["meetup", "courier"],
+      },
+      CONFIG_DEFAULTS,
+    );
     expect(res).toEqual({ ok: true });
     const [after] = await db.select().from(copies).where(eq(copies.id, c.id));
     expect(after.condition).toBe("worn");
     expect(after.replacementValuePaise).toBe(100000);
+    // Rental price is clamped to the configured ceiling (₹200).
+    expect(after.rentalPricePaise).toBe(20000);
+    expect(after.loanPeriodDays).toBe(28);
     expect(after.minBorrowerTrust).toBe(50);
   });
 

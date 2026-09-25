@@ -8,8 +8,6 @@ import {
   loans,
   members,
   notifications,
-  plans,
-  poolRuns,
   payouts,
   ledgerEntries,
 } from "@/db/schema";
@@ -58,7 +56,7 @@ async function member(name: string, extra: Partial<typeof members.$inferInsert> 
     .returning();
   await db
     .insert(ledgerEntries)
-    .values({ memberId: m.id, account: "deposit", kind: "deposit_in", amountPaise: 75000 });
+    .values({ memberId: m.id, account: "deposit", kind: "deposit_in", amountPaise: 50000 });
   return m.id;
 }
 
@@ -89,6 +87,8 @@ async function loanAt(
       state,
       handoffMethod: "meetup",
       requestedAt: ago(10 * D),
+      // Free copies are paid at acceptance; tests for the payment window override this.
+      paidAt: state === "requested" ? null : ago(9 * D),
       ...over,
     })
     .returning();
@@ -109,22 +109,12 @@ beforeAll(async () => {
     .insert(clusters)
     .values({ slug: "ce", name: "CE", pincodes: [], status: "open" })
     .returning({ id: clusters.id });
-  const [plan] = await db
-    .insert(plans)
-    .values({
-      code: "regular",
-      name: "Regular",
-      pricePaise: 24900,
-      concurrentLimit: 5,
-      loanPeriodDays: 21,
-    })
-    .returning();
   [{ id: bookId }] = await db
     .insert(books)
     .values({ isbn13: "9780062316097", title: "Sapiens", authors: ["H"], source: "google_books" })
     .returning({ id: books.id });
-  lender = await member("lender", { planId: plan.id });
-  borrower = await member("borrower", { planId: plan.id });
+  lender = await member("lender");
+  borrower = await member("borrower");
 });
 afterAll(() => close());
 
@@ -138,7 +128,9 @@ describe("daily job", () => {
     due4: string,
     pastDue: string,
     lost13: string,
-    lost15: string;
+    lost15: string,
+    unpaidOpen: string,
+    unpaidLate: string;
 
   beforeAll(async () => {
     req47 = await loanAt("requested", { requestedAt: ago(47 * H) });
@@ -152,6 +144,21 @@ describe("daily job", () => {
       outLenderConfirmedAt: ago(73 * H),
     });
     acc6d = await loanAt("accepted", { respondedAt: ago(6 * D) });
+    // Priced loans waiting on the borrower: one inside the payment window, one past it.
+    unpaidOpen = await loanAt("accepted", {
+      respondedAt: ago(20 * H),
+      rentalPaise: 5000,
+      platformFeePaise: 750,
+      paidAt: null,
+      paymentDueAt: new Date(NOW.getTime() + 4 * H),
+    });
+    unpaidLate = await loanAt("accepted", {
+      respondedAt: ago(26 * H),
+      rentalPaise: 5000,
+      platformFeePaise: 750,
+      paidAt: null,
+      paymentDueAt: ago(2 * H),
+    });
     due3 = await loanAt("on_loan", {
       handedOffAt: ago(18 * D),
       dueAt: new Date(NOW.getTime() + 3 * D + 2 * H),
@@ -174,6 +181,9 @@ describe("daily job", () => {
     expect(await stateOf(acc71)).toBe("accepted");
     expect(await stateOf(acc73)).toBe("on_loan");
     expect(await stateOf(acc6d)).toBe("expired");
+    expect(await stateOf(unpaidOpen)).toBe("accepted");
+    expect(await stateOf(unpaidLate)).toBe("expired");
+    expect(await notes(unpaidLate, "payment_expired")).toHaveLength(2);
     expect(await stateOf(pastDue)).toBe("overdue");
     expect(await stateOf(lost13)).toBe("overdue");
     expect(await stateOf(lost15)).toBe("lost");
@@ -187,7 +197,9 @@ describe("daily job", () => {
     const steps = Object.fromEntries(out.steps.map((s) => [s.step, s.count]));
     expect(steps.expire_requests).toBe(1);
     expect(steps.auto_confirm_handoff).toBe(1);
+    expect(steps.expire_unpaid).toBe(1);
     expect(steps.expire_handoffs).toBe(1);
+    expect(steps.process_refunds).toBe(0);
     expect(steps.mark_overdue).toBe(1);
     expect(steps.mark_lost).toBe(1);
   });
@@ -246,18 +258,31 @@ describe("daily job", () => {
 });
 
 describe("monthly job", () => {
-  it("runs the pool for the previous month and the payout batch, idempotently", async () => {
+  it("generates the previous month's payout batch, idempotently", async () => {
+    // Give the lender a balance over the threshold and a verified UPI so a payout is due.
+    await db
+      .insert(ledgerEntries)
+      .values({ memberId: lender, account: "payout", kind: "rental_credit", amountPaise: 25000 });
+    await db
+      .update(members)
+      .set({ payoutBalancePaise: 25000, upiId: "lender@upi", upiVerified: true })
+      .where(eq(members.id, lender));
+
     const out = await runCronJob(db, "monthly", monthlySteps(db, config, NOW), { now: NOW });
     expect(out.status, JSON.stringify(out.steps)).toBe("completed");
-    const runs = await db.select().from(poolRuns);
-    expect(runs).toHaveLength(1);
-    expect(runs[0].month).toEqual(new Date("2026-08-01"));
+    const rows = await db.select().from(payouts);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      memberId: lender,
+      amountPaise: 25000,
+      batchId: "batch_2026-08",
+      month: new Date("2026-08-01"),
+    });
     const again = await runCronJob(db, "monthly", monthlySteps(db, config, NOW), {
       now: NOW,
       force: true,
     });
     expect(again.status).toBe("completed");
-    expect(await db.select().from(poolRuns)).toHaveLength(1);
-    expect(await db.select().from(payouts)).toHaveLength(0); // nobody has a verified UPI here
+    expect(await db.select().from(payouts)).toHaveLength(1);
   });
 });

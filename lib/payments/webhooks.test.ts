@@ -5,51 +5,40 @@ import {
   clusters,
   copies,
   ledgerEntries,
+  loanPayments,
+  loans,
   members,
-  plans,
-  subscriptionPayments,
   webhookEvents,
 } from "@/db/schema";
 import { CONFIG_DEFAULTS } from "@/lib/config/schema";
 import { createTestDb, type TestDb } from "@/test/db";
+import { createRentalOrder, processPendingRefunds } from "./rental";
 import { processRazorpayWebhook, webhookEventId, type RazorpayWebhook } from "./webhooks";
 
 let db: TestDb;
 let close: () => Promise<void>;
 let clusterId: string;
 let memberId: string;
+let lenderId: string;
+let copyId: string;
+let bookId: string;
+
 const NOW = new Date("2026-09-21T10:00:00Z");
 const config = CONFIG_DEFAULTS;
 
-const sub = (
-  over: Partial<{
-    id: string;
-    plan_id: string;
-    status: string;
-    notes: Record<string, string>;
-  }> = {},
-) => ({
-  entity: {
-    id: "sub_1",
-    plan_id: "plan_regular",
-    customer_id: "cust_1",
-    status: "active",
-    notes: { member_id: memberId },
-    ...over,
-  },
-});
 const payment = (
   over: Partial<{
     id: string;
     amount: number;
     status: string;
+    order_id: string | null;
     notes: Record<string, string>;
     created_at: number;
   }> = {},
 ) => ({
   entity: {
     id: "pay_1",
-    amount: 24900,
+    amount: 50000,
     status: "captured",
     created_at: Math.floor(NOW.getTime() / 1000),
     ...over,
@@ -70,14 +59,6 @@ beforeAll(async () => {
     .insert(clusters)
     .values({ slug: "ce", name: "CE", pincodes: [], status: "open" })
     .returning({ id: clusters.id });
-  await db.insert(plans).values({
-    code: "regular",
-    name: "Regular",
-    pricePaise: 24900,
-    concurrentLimit: 2,
-    loanPeriodDays: 21,
-    razorpayPlanId: "plan_regular",
-  });
   const [book] = await db
     .insert(books)
     .values({
@@ -87,29 +68,48 @@ beforeAll(async () => {
       source: "google_books",
     })
     .returning();
-  [{ id: memberId }] = await db
+  bookId = book.id;
+  const [m, l] = await db
     .insert(members)
-    .values({
-      authUserId: crypto.randomUUID(),
-      phoneHash: "m",
-      displayName: "M",
-      clusterId,
-      state: "registered",
-    })
+    .values([
+      { authUserId: crypto.randomUUID(), phoneHash: "m", displayName: "M", clusterId },
+      {
+        authUserId: crypto.randomUUID(),
+        phoneHash: "l",
+        displayName: "L",
+        clusterId,
+        state: "active",
+      },
+    ])
     .returning({ id: members.id });
-  // Borrow gate satisfied: 3 listed, one verified.
-  for (let i = 0; i < 3; i++) {
-    await db.insert(copies).values({
-      bookId: book.id,
-      ownerId: memberId,
+  memberId = m.id;
+  lenderId = l.id;
+  // Borrow gate: the member has one listed copy.
+  await db.insert(copies).values({
+    bookId,
+    ownerId: memberId,
+    clusterId,
+    condition: "good",
+    replacementValuePaise: 30000,
+    listingPhotoPath: "p0.jpg",
+    allowedHandoffs: ["meetup"],
+  });
+  // The lender's priced copy, which the member will borrow.
+  [{ id: copyId }] = await db
+    .insert(copies)
+    .values({
+      bookId,
+      ownerId: lenderId,
       clusterId,
       condition: "good",
       replacementValuePaise: 30000,
-      listingPhotoPath: `p${i}.jpg`,
+      rentalPricePaise: 5000,
+      loanPeriodDays: 21,
+      listingPhotoPath: "p1.jpg",
       allowedHandoffs: ["meetup"],
-      verificationStatus: i === 0 ? "verified" : "unverified",
-    });
-  }
+      availability: "requested",
+    })
+    .returning({ id: copies.id });
 });
 afterAll(() => close());
 
@@ -121,41 +121,28 @@ describe("webhookEventId", () => {
   });
 });
 
-describe("activation flow via webhooks", () => {
-  it("subscription.activated attaches the plan but does not activate without a deposit", async () => {
-    const out = await run(
-      "evt_sub_act",
-      envelope("subscription.activated", { subscription: sub() }),
-    );
-    expect(out).toEqual({ status: "processed", event: "subscription.activated", memberId });
-    const m = await member();
-    expect(m.planId).not.toBeNull();
-    expect(m.razorpaySubscriptionId).toBe("sub_1");
-    expect(m.razorpayCustomerId).toBe("cust_1");
-    expect(m.state).toBe("registered");
-  });
-
+describe("deposit activation via webhooks", () => {
   it("payment.captured for the deposit posts deposit_in and activates the member", async () => {
     const out = await run(
       "evt_dep",
       envelope("payment.captured", {
         payment: payment({
           id: "pay_dep",
-          amount: 75000,
+          amount: 50000,
           notes: { member_id: memberId, purpose: "deposit" },
         }),
       }),
     );
-    expect(out.status).toBe("processed");
+    expect(out).toEqual({ status: "processed", event: "payment.captured", memberId });
     const m = await member();
-    expect(m.depositBalancePaise).toBe(75000);
+    expect(m.depositBalancePaise).toBe(50000);
     expect(m.state).toBe("active");
     const entries = await db
       .select()
       .from(ledgerEntries)
       .where(eq(ledgerEntries.memberId, memberId));
     expect(entries).toEqual([
-      expect.objectContaining({ kind: "deposit_in", amountPaise: 75000, razorpayRef: "pay_dep" }),
+      expect.objectContaining({ kind: "deposit_in", amountPaise: 50000, razorpayRef: "pay_dep" }),
     ]);
   });
 
@@ -165,7 +152,7 @@ describe("activation flow via webhooks", () => {
       envelope("payment.captured", {
         payment: payment({
           id: "pay_dep",
-          amount: 75000,
+          amount: 50000,
           notes: { member_id: memberId, purpose: "deposit" },
         }),
       }),
@@ -180,79 +167,7 @@ describe("activation flow via webhooks", () => {
     expect(rows.filter((r) => r.providerEventId === "evt_dep")).toHaveLength(1);
   });
 
-  it("subscription.charged records revenue with the pool month", async () => {
-    const out = await run(
-      "evt_charge",
-      envelope("subscription.charged", {
-        subscription: sub(),
-        payment: payment({ id: "pay_month", amount: 24900 }),
-      }),
-    );
-    expect(out.status).toBe("processed");
-    const [p] = await db
-      .select()
-      .from(subscriptionPayments)
-      .where(eq(subscriptionPayments.razorpayPaymentId, "pay_month"));
-    expect(p.status).toBe("captured");
-    expect(p.poolMonth).toEqual(new Date("2026-09-01"));
-    // A second charged event for the same payment (different event id) is absorbed by the payment id unique.
-    await run(
-      "evt_charge_dupe",
-      envelope("subscription.charged", {
-        subscription: sub(),
-        payment: payment({ id: "pay_month", amount: 24900 }),
-      }),
-    );
-    expect(
-      await db
-        .select()
-        .from(subscriptionPayments)
-        .where(eq(subscriptionPayments.razorpayPaymentId, "pay_month")),
-    ).toHaveLength(1);
-  });
-
-  it("pending starts the clock; halted lapses; a later charge brings the member back", async () => {
-    await run(
-      "evt_pending",
-      envelope("subscription.pending", {
-        subscription: sub({ status: "pending" }),
-        payment: payment({ id: "pay_fail", status: "failed" }),
-      }),
-    );
-    expect((await member()).subscriptionPendingSince).toEqual(NOW);
-    const [failed] = await db
-      .select()
-      .from(subscriptionPayments)
-      .where(eq(subscriptionPayments.razorpayPaymentId, "pay_fail"));
-    expect(failed.status).toBe("failed");
-
-    await run(
-      "evt_halted",
-      envelope("subscription.halted", { subscription: sub({ status: "halted" }) }),
-    );
-    expect((await member()).state).toBe("lapsed");
-
-    await run(
-      "evt_charge2",
-      envelope("subscription.charged", {
-        subscription: sub(),
-        payment: payment({ id: "pay_month2", amount: 24900 }),
-      }),
-    );
-    const m = await member();
-    expect(m.state).toBe("active");
-    expect(m.subscriptionPendingSince).toBeNull();
-  });
-
-  it("cancelled clears the plan; refund.processed posts deposit_refund", async () => {
-    await run(
-      "evt_cancel",
-      envelope("subscription.cancelled", { subscription: sub({ status: "cancelled" }) }),
-    );
-    let m = await member();
-    expect(m.state).toBe("cancelled");
-    expect(m.planId).toBeNull();
-
+  it("refund.processed for a deposit posts deposit_refund", async () => {
     await run(
       "evt_refund",
       envelope("refund.processed", {
@@ -260,18 +175,153 @@ describe("activation flow via webhooks", () => {
           entity: {
             id: "rfnd_1",
             payment_id: "pay_dep",
-            amount: 75000,
+            amount: 50000,
             status: "processed",
             notes: { member_id: memberId, purpose: "deposit_refund" },
           },
         },
       }),
     );
-    m = await member();
-    expect(m.depositBalancePaise).toBe(0);
+    expect((await member()).depositBalancePaise).toBe(0);
+  });
+});
+
+describe("rental payments", () => {
+  let loanId: string;
+  let orderId: string;
+
+  beforeAll(async () => {
+    // An accepted, unpaid loan for the lender's ₹50 copy (as the machine would have left it).
+    [{ id: loanId }] = await db
+      .insert(loans)
+      .values({
+        copyId,
+        bookId,
+        lenderId,
+        borrowerId: memberId,
+        state: "accepted",
+        handoffMethod: "meetup",
+        requestedAt: new Date(NOW.getTime() - 3_600_000),
+        respondedAt: NOW,
+        rentalPaise: 5000,
+        platformFeePaise: 750,
+        paymentDueAt: new Date(NOW.getTime() + 24 * 3_600_000),
+      })
+      .returning({ id: loans.id });
   });
 
-  it("ignores payments that are not deposits, and unknown events", async () => {
+  it("createRentalOrder raises one Razorpay order per loan and reuses it", async () => {
+    const calls: unknown[] = [];
+    const rz = {
+      createOrder: async (input: unknown) => {
+        calls.push(input);
+        return { id: `order_${calls.length}`, amount: 5000, currency: "INR", status: "created" };
+      },
+    };
+    const first = await createRentalOrder(db, rz, { loanId, memberId }, NOW);
+    expect(first.ok && first.order).toMatchObject({ amountPaise: 5000, orderId: "order_1" });
+    const again = await createRentalOrder(db, rz, { loanId, memberId }, NOW);
+    expect(again.ok && again.order.orderId).toBe("order_1");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ purpose: "rental", loanId, memberId });
+    orderId = "order_1";
+
+    expect(await createRentalOrder(db, rz, { loanId, memberId: lenderId }, NOW)).toEqual({
+      ok: false,
+      error: "not_borrower",
+    });
+  });
+
+  it("payment.captured for a rental applies `pay` once; the duplicate is absorbed", async () => {
+    const body = envelope("payment.captured", {
+      payment: payment({
+        id: "pay_rent",
+        amount: 5000,
+        order_id: orderId,
+        notes: { member_id: memberId, purpose: "rental" },
+      }),
+    });
+    const out = await run("evt_rent", body);
+    expect(out).toEqual({ status: "processed", event: "payment.captured", memberId });
+    const [loan] = await db.select().from(loans).where(eq(loans.id, loanId));
+    expect(loan.paidAt).toEqual(NOW);
+    const [lp] = await db.select().from(loanPayments).where(eq(loanPayments.loanId, loanId));
+    expect(lp).toMatchObject({ status: "captured", razorpayPaymentId: "pay_rent" });
+
+    // Same payment, new event id (Razorpay retries): already paid, no second effect.
+    const retry = await run("evt_rent_retry", body);
+    expect(retry.status).toBe("processed");
+    expect(
+      await createRentalOrder(
+        db,
+        { createOrder: async () => ({}) as never },
+        { loanId, memberId },
+        NOW,
+      ),
+    ).toEqual({
+      ok: false,
+      error: "already_paid",
+    });
+  });
+
+  it("a wrong amount is refused", async () => {
+    const [{ id: other }] = await db
+      .insert(loans)
+      .values({
+        copyId,
+        bookId,
+        lenderId,
+        borrowerId: memberId,
+        state: "declined",
+        handoffMethod: "meetup",
+        rentalPaise: 5000,
+        platformFeePaise: 750,
+      })
+      .returning({ id: loans.id });
+    const out = await run(
+      "evt_rent_wrong",
+      envelope("payment.captured", {
+        payment: payment({
+          id: "pay_wrong",
+          amount: 100,
+          notes: { purpose: "rental", loan_id: other },
+        }),
+      }),
+    );
+    expect(out.status).toBe("ignored");
+  });
+
+  it("processPendingRefunds calls Razorpay for flagged rows and marks them refunded", async () => {
+    await db
+      .update(loanPayments)
+      .set({ status: "refund_pending" })
+      .where(eq(loanPayments.loanId, loanId));
+    const refunds: unknown[] = [];
+    const rz = {
+      createRefund: async (input: unknown) => {
+        refunds.push(input);
+        return {
+          id: "rfnd_rent",
+          payment_id: "pay_rent",
+          amount: 5000,
+          status: "processed" as const,
+        };
+      },
+    };
+    const res = await processPendingRefunds(db, rz, NOW);
+    expect(res).toEqual({ refunded: 1, failed: 0 });
+    expect(refunds[0]).toMatchObject({
+      paymentId: "pay_rent",
+      amountPaise: 5000,
+      purpose: "rental_refund",
+    });
+    const [lp] = await db.select().from(loanPayments).where(eq(loanPayments.loanId, loanId));
+    expect(lp).toMatchObject({ status: "refunded", razorpayRefundId: "rfnd_rent" });
+    // Nothing left to do on the next run.
+    expect(await processPendingRefunds(db, rz, NOW)).toEqual({ refunded: 0, failed: 0 });
+  });
+
+  it("ignores payments that are not deposits or rentals, and unknown events", async () => {
     expect(
       (
         await run(
@@ -283,18 +333,5 @@ describe("activation flow via webhooks", () => {
       ).status,
     ).toBe("ignored");
     expect((await run("evt_unknown", envelope("order.paid", {}))).status).toBe("ignored");
-  });
-
-  it("records a processing error on the webhook row and rethrows", async () => {
-    const bad = envelope("subscription.activated", {
-      subscription: sub({ id: "sub_bad", plan_id: "plan_missing" }),
-    });
-    await expect(run("evt_bad", bad)).rejects.toThrow(/No plan/);
-    const [row] = await db
-      .select()
-      .from(webhookEvents)
-      .where(eq(webhookEvents.providerEventId, "evt_bad"));
-    expect(row.error).toMatch(/No plan/);
-    expect(row.processedAt).not.toBeNull();
   });
 });

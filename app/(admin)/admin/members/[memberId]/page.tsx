@@ -23,8 +23,8 @@ export default async function AdminMemberPage({
       <header>
         <h1 className="text-2xl font-semibold">{m.displayName ?? "(no name)"}</h1>
         <p className="text-muted-foreground text-sm">
-          {m.state} · {d.cluster ?? "no cluster"} · {d.plan ?? "no plan"} · trust {m.trustScore} ·
-          joined {when.format(m.createdAt)}
+          {m.state} · {d.cluster ?? "no cluster"} · trust {m.trustScore} · joined{" "}
+          {when.format(m.createdAt)}
           {m.suspendedUntil && <> · suspended until {when.format(m.suspendedUntil)}</>}
         </p>
         <p className="text-sm">

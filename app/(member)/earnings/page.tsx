@@ -16,8 +16,7 @@ const shortDate = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "sho
 export default async function EarningsPage() {
   const member = await requireOnboardedMember();
   const db = getDb();
-  const config = await loadConfig(db);
-  const e = await loadEarnings(db, member, config);
+  const e = await loadEarnings(db, member, await loadConfig(db));
   const progress = Math.min(100, Math.round((e.balancePaise / e.thresholdPaise) * 100));
 
   return (
@@ -25,8 +24,9 @@ export default async function EarningsPage() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Earnings</h1>
         <p className="text-muted-foreground text-sm">
-          {config.pool_pct}% of every month&apos;s subscription revenue is split equally across all
-          completed loans. Your share is your loans times the per-loan rate.
+          You set the price on each copy. When a book goes out, the rental less the{" "}
+          {e.platformFeePct}% platform fee is credited to your balance, and balances are paid out
+          monthly by UPI.
         </p>
       </header>
 
@@ -47,34 +47,21 @@ export default async function EarningsPage() {
 
       <section className="grid gap-3 sm:grid-cols-3">
         <Stat
-          label={`Loans completed in ${monthName(e.thisMonth.month).split(" ")[0]}`}
-          value={String(e.thisMonth.completedLoans)}
-        />
-        <Stat
-          label="Estimated this month"
-          value={`~${formatPaise(e.thisMonth.estimatePaise)}`}
+          label={`Earned in ${monthName(`${e.thisMonth.month}-01`).split(" ")[0]}`}
+          value={formatPaise(e.thisMonth.earnedPaise)}
           sub={
-            e.thisMonth.totalLoans
-              ? `${formatPaise(e.thisMonth.perLoanPaise)} per loan so far`
-              : "No completed loans yet this month"
+            e.thisMonth.loans
+              ? `${e.thisMonth.loans} loan${e.thisMonth.loans === 1 ? "" : "s"} went out`
+              : "No loans out yet this month"
           }
         />
+        <Stat label="Earned all time" value={formatPaise(e.allTimePaise)} />
         <Stat
           label="Next payout"
           value={shortDate.format(e.nextPayoutDate)}
           sub="1st of every month"
         />
       </section>
-
-      {e.lastStatement && (
-        <section className="rounded-lg border p-4 text-sm">
-          <p className="font-medium">{monthName(e.lastStatement.month)} statement</p>
-          <p className="text-muted-foreground">
-            {formatPaise(e.lastStatement.perLoanPaise)} per loan · you completed{" "}
-            {e.lastStatement.myLoans} · credited {formatPaise(e.lastStatement.creditPaise)}
-          </p>
-        </section>
-      )}
 
       <section className="flex flex-col gap-2">
         <h2 className="text-muted-foreground text-sm font-medium">Payout UPI ID</h2>

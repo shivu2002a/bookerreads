@@ -36,8 +36,8 @@ export default async function TermsPage() {
       <p>
         BookerReads is a members-only book lending network in Bangalore. Members list books they own
         and lend them to other members in the same neighbourhood cluster. BookerReads operates the
-        platform, holds deposits, and distributes the lender pool. BookerReads does not own the
-        books and is not a party to the loan between two members, except as described in these
+        platform, holds deposits, and passes rental payments to lenders. BookerReads does not own
+        the books and is not a party to the loan between two members, except as described in these
         terms.
       </p>
 
@@ -52,11 +52,19 @@ export default async function TermsPage() {
 
       <h2>3. Borrowing</h2>
       <p>
-        To borrow you need an active monthly plan, a refundable deposit of {deposit}, and at least{" "}
-        {c.borrow_gate.min_listed_copies} books listed with photos, one of which has been verified
-        (completed a loan or checked in person) or one loan completed as a lender. Plans set how
-        many books you may have at once and for how long. Requests you do not respond to within{" "}
-        {c.request_timeout_hours} hours expire.
+        There is no subscription. To borrow you need a refundable deposit of {deposit} and at least{" "}
+        {c.borrow_gate.min_listed_copies} book
+        {c.borrow_gate.min_listed_copies === 1 ? "" : "s"} of your own listed with a photo. You may
+        have up to {c.max_open_loans} loans open at once, and one until your first return. Requests
+        the lender does not respond to within {c.request_timeout_hours} hours expire.
+      </p>
+      <p>
+        Each copy carries a rental price set by its lender (between{" "}
+        {formatPaise(c.rental_price_min_paise)} and {formatPaise(c.rental_price_max_paise)}; it may
+        be free) and a loan period of 14, 21, or 28 days. When a lender accepts your request you
+        have {c.payment_window_hours} hours to pay the rental price through Razorpay; otherwise the
+        request expires. Rental payments are non-refundable once the book has been handed over. If
+        the handoff never happens, the payment is refunded in full.
       </p>
 
       <h2>4. Handoffs, returns, and timing</h2>
@@ -69,7 +77,7 @@ export default async function TermsPage() {
         counts as a no-show against whoever did not confirm.
       </p>
       <p>
-        Books are due back at the end of your plan&apos;s loan period. You may extend once by{" "}
+        Books are due back at the end of the copy&apos;s loan period. You may extend once by{" "}
         {c.extension_days} days. After the due date the loan is overdue; after{" "}
         {c.overdue_to_lost_days} further days the book is treated as lost.
       </p>
@@ -90,13 +98,13 @@ export default async function TermsPage() {
         scores are adjusted accordingly.
       </p>
 
-      <h2>6. Lender pool and payouts</h2>
+      <h2>6. Lender earnings and payouts</h2>
       <p>
-        Each month, {c.pool_pct}% of subscription revenue collected that month forms the lender
-        pool. It is divided equally among all loans that reached &quot;returned&quot; in the month
-        (including loans later disputed), rounded down to the rupee; any remainder carries into the
-        next month. Balances of {threshold} or more are paid to a verified UPI ID on the 1st of the
-        following month. Balances below {threshold} roll over.
+        When a book you lend is handed over, the rental price less a platform fee of{" "}
+        {c.platform_fee_pct}% is credited to your payout balance, rounded down to the rupee. The
+        credit is not reversed by a late return, a dispute, or a loss; those are handled through the
+        borrower&apos;s deposit. Balances of {threshold} or more are paid to a verified UPI ID on
+        the 1st of the following month. Balances below {threshold} roll over.
       </p>
       <p>
         <strong>
@@ -108,10 +116,9 @@ export default async function TermsPage() {
 
       <h2>7. Cancelling and refunds</h2>
       <p>
-        You may cancel your plan at any time; borrowing continues to the end of the paid period.
-        Your deposit is refunded to the original payment method within 7 days of cancellation once
-        you have no open loans or disputes. Deposits are not refunded while a book you borrowed is
-        unreturned.
+        You may stop borrowing at any time; there is no paid period to run down. Your deposit is
+        refunded to the original payment method within 7 days once you have no open loans or
+        disputes. Deposits are not refunded while a book you borrowed is unreturned.
       </p>
 
       <h2>8. Trust score and suspension</h2>
@@ -132,8 +139,8 @@ export default async function TermsPage() {
 
       <h2>10. Changes</h2>
       <p>
-        Prices, plan limits, deposit amount, and the pool percentage may change with 30 days&apos;
-        notice in the app. Changes do not apply to loans already in progress.
+        The deposit amount, platform fee, rental price range, and loan limits may change with 30
+        days&apos; notice in the app. Changes do not apply to loans already in progress.
       </p>
 
       <h2>11. Contact</h2>

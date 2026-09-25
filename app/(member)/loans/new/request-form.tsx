@@ -71,8 +71,8 @@ export function RequestForm({ copyId, methods }: { copyId: string; methods: Meth
         {pending ? "Sending…" : "Send request"}
       </Button>
       <p className="text-muted-foreground text-xs">
-        The lender has 48 hours to reply. You can have one request open until your first return,
-        then up to your plan&apos;s limit.
+        The lender has 48 hours to reply. If they accept, you&apos;ll have 24 hours to pay the
+        rental price. You can have one request open until your first return.
       </p>
     </div>
   );
